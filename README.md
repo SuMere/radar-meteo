@@ -32,6 +32,12 @@ Sul UDOO lo script `udoo-setup.sh` (voce **R**) clona il repository in
 `/opt/radar-meteo` e lo avvia come servizio systemd isolato (`radar-meteo.service`,
 utente dinamico senza privilegi, filesystem in sola lettura).
 
+### Online con GitHub Pages
+
+L'app è statica, quindi funziona anche da GitHub Pages
+(Settings → Pages → Deploy from a branch → `main` / root):
+`https://sumere.github.io/radar-meteo/`. Su HTTPS funziona anche il pulsante 📍.
+
 ## Fonti
 
 | Fonte | Tipo | Copertura | Passato | Futuro |
