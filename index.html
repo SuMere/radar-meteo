@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov; connect-src https://api.rainviewer.com https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov https://api.open-meteo.com https://geocoding-api.open-meteo.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="strict-origin">
+<title>Radar Meteo</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=">
+<link rel="stylesheet" href="css/style.css">
+<script src="vendor/leaflet/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" defer></script>
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<header class="toolbar">
+  <div class="brand">Radar Meteo <span id="place" class="muted"></span></div>
+  <div class="search">
+    <input id="search" type="search" placeholder="Cerca un luogo…" autocomplete="off" maxlength="100" aria-label="Cerca un luogo">
+    <ul id="search-results" class="results" hidden></ul>
+  </div>
+  <button id="btn-locate" title="Usa la mia posizione">📍</button>
+  <label class="ctl">Fonte
+    <select id="mode" aria-label="Fonte dati"></select>
+  </label>
+  <label class="ctl">Opacità
+    <input id="opacity" type="range" min="0.1" max="1" step="0.05" aria-label="Opacità radar">
+  </label>
+  <label class="ctl">Mappa
+    <select id="basemap"><option value="light">Chiara</option><option value="dark">Scura</option><option value="osm">OpenStreetMap</option></select>
+  </label>
+  <button id="btn-ratings" title="Rating delle fonti">★ Fonti</button>
+</header>
+
+<main class="map-wrap">
+  <div id="map" aria-label="Mappa radar"></div>
+  <div class="crosshair" aria-hidden="true" title="Il centro della mappa determina la fonte scelta"></div>
+  <div id="map-note" class="map-note" hidden></div>
+</main>
+
+<aside id="ratings" class="ratings" hidden>
+  <div class="ratings-head">
+    <h2>Rating delle fonti</h2>
+    <button id="btn-rerate">Rivaluta ora</button>
+    <button id="btn-ratings-close" aria-label="Chiudi">✕</button>
+  </div>
+  <p id="ratings-when" class="muted small"></p>
+  <table>
+    <thead><tr><th></th><th>Fonte</th><th>Copre il centro</th><th>Rating</th><th>Affidab.</th><th>Risposta</th><th>Ultimo dato</th><th>Sonde</th></tr></thead>
+    <tbody id="ratings-body"></tbody>
+  </table>
+  <p class="muted small">
+    Il rating (0–100) pesa: tipo di dato (radar a terra &gt; satellite &gt; modello) 35%, affidabilità misurata 25%,
+    risoluzione spaziale 12%, freschezza dell'ultimo dato 12%, frequenza temporale 8%, velocità 5%, completezza 3%.
+    Le fonti vengono sondate ogni 5 minuti; l'affidabilità è una media mobile salvata nel browser.
+    In modalità automatica, per ogni istante viene scelta la fonte con il rating più alto che copre il centro della mappa
+    (il nowcast e le previsioni a lungo termine vengono penalizzati).
+  </p>
+</aside>
+
+<footer class="timebar">
+  <div class="time-row">
+    <div class="time"><span id="time-main"></span> <span id="time-rel" class="muted"></span></div>
+    <div class="buttons">
+      <button id="btn-day-back" title="-1 giorno">−1g</button>
+      <button id="btn-prev" title="Frame precedente (←, Maiusc+← = −1 h)">«</button>
+      <button id="btn-play" title="Riproduci (spazio)">▶</button>
+      <button id="btn-next" title="Frame successivo (→, Maiusc+→ = +1 h)">»</button>
+      <button id="btn-day-fwd" title="+1 giorno">+1g</button>
+      <button id="btn-loop" title="Animazione delle ultime 2 ore in loop">⟲ 2h</button>
+      <button id="btn-live" title="Vai all'ultimo dato osservato e seguilo">● Adesso</button>
+      <select id="speed" title="Velocità animazione">
+        <option value="1000">lenta</option><option value="500" selected>normale</option><option value="250">veloce</option>
+      </select>
+    </div>
+  </div>
+  <div id="source-info" class="source-info"></div>
+  <canvas id="timeline" class="timeline" aria-hidden="true"></canvas>
+  <input id="slider" type="range" class="slider" aria-label="Istante visualizzato (±15 giorni)">
+  <div id="tl-legend" class="tl-legend muted small"></div>
+</footer>
+</body>
+</html>
