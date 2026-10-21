@@ -288,7 +288,7 @@ class ModelGrid {
     const img = sctx.createImageData(d.nx, d.ny);
     for (let i = 0; i < d.nx * d.ny; i++) img.data.set(cfg.color(main[i][idx]), i * 4);
     sctx.putImageData(img, 0, 0);
-    const arrows = v === 'wind' && !windAnim.enabled; // frecce statiche solo con "riduci movimento"
+    const arrows = v === 'wind' && !fieldAnim.enabled; // frecce statiche solo con "riduci movimento"
     const cell = arrows ? 64 : 24; // più risoluzione per frecce nitide
     const big = document.createElement('canvas');
     big.width = d.nx * cell; big.height = d.ny * cell;
@@ -312,40 +312,62 @@ class ModelGrid {
 }
 const modelGrid = new ModelGrid();
 
-// ------------------------------------------------------------------ vento animato
-// Particelle trasportate dal campo di vento del modello, con scie che sfumano.
-// Il campo (u, v in km/h) è interpolato bilinearmente dalla griglia su una maglia di
-// pixel dello schermo, ricostruita a ogni spostamento della mappa o cambio d'ora.
+// ------------------------------------------------------------------ vento e UV animati
+// Vento: particelle trasportate dal campo del modello, con scie che sfumano.
+// UV: bagliori che compaiono, salgono piano e svaniscono; densità e dimensione
+// crescono con l'indice UV (nessuno di notte).
+// Il campo (vento: u, v in km/h; UV: indice) è interpolato bilinearmente dalla griglia
+// su una maglia di pixel dello schermo, ricostruita a ogni spostamento o cambio d'ora.
 const FIELD_STEP = 8;    // px tra i nodi della maglia
-const PX_PER_KMH = 0.045; // velocità visiva: px per frame per km/h
-class WindAnimation {
+// Velocità visiva (px per frame a 60 Hz) non lineare: anche il vento debole scorre
+// in modo percepibile (5 km/h ≈ 35 px/s, 20 km/h ≈ 85 px/s, 100 km/h ≈ 220 px/s).
+const windPx = kmh => 0.22 * Math.pow(kmh, 0.62);
+const ANIMATED = new Set(['wind', 'uv']);
+function glowSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d'), grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,245,1)');
+  grad.addColorStop(0.25, 'rgba(255,240,180,0.7)');
+  grad.addColorStop(1, 'rgba(255,220,120,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 32, 32);
+  return c;
+}
+class FieldAnimation {
   constructor() {
-    this.canvas = el('canvas', { class: 'wind-canvas', 'aria-hidden': 'true' });
+    this.canvas = el('canvas', { class: 'field-canvas', 'aria-hidden': 'true' });
     this.canvas.hidden = true;
     map.getContainer().append(this.canvas);
     this.ctx = this.canvas.getContext('2d');
     this.src = null; this.field = null; this.particles = []; this.raf = 0; this.moving = false;
     this.reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
     this.buckets = [[], [], [], []];
+    this.sprite = glowSprite();
     map.on('movestart zoomstart', () => { this.moving = true; this._pause(); });
     map.on('moveend', () => { this.moving = false; this._rebuild(); });
     map.on('resize', () => this._rebuild());
   }
   get enabled() { return !this.reduced.matches; }
   setOpacity(o) { this.canvas.style.opacity = String(0.4 + 0.6 * o); }
-  setSource(d, idx) {
+  setSource(d, idx, mode) {
     if (!this.enabled) return this.stop();
-    if (this.src?.d === d && this.src.idx === idx) return;
-    // u, v per cella: componenti verso cui soffia (x = est, y = sud sullo schermo).
+    if (this.src?.d === d && this.src.idx === idx && this.src.mode === mode) return;
     const n = d.nx * d.ny, u = new Float32Array(n), v = new Float32Array(n);
-    const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
-    for (let i = 0; i < n; i++) {
-      const s = sp[i][idx], a = dir[i][idx];
-      if (!Number.isFinite(s) || !Number.isFinite(a)) { u[i] = v[i] = NaN; continue; }
-      const b = (a + 180) * Math.PI / 180;
-      u[i] = s * Math.sin(b); v[i] = -s * Math.cos(b);
+    if (mode === 'wind') {
+      // u, v per cella: componenti verso cui soffia (x = est, y = sud sullo schermo).
+      const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
+      for (let i = 0; i < n; i++) {
+        const s = sp[i][idx], a = dir[i][idx];
+        if (!Number.isFinite(s) || !Number.isFinite(a)) { u[i] = v[i] = NaN; continue; }
+        const b = (a + 180) * Math.PI / 180;
+        u[i] = s * Math.sin(b); v[i] = -s * Math.cos(b);
+      }
+    } else {
+      const uv = d.values.uv_index;
+      for (let i = 0; i < n; i++) u[i] = Number.isFinite(uv[i][idx]) ? uv[i][idx] : NaN;
     }
-    this.src = { d, idx, u, v };
+    if (this.src && this.src.mode !== mode) this._pause();
+    this.src = { d, idx, mode, u, v };
     this._rebuild();
   }
   stop() {
@@ -354,7 +376,7 @@ class WindAnimation {
     this._pause();
   }
   _pause() {
-    cancelAnimationFrame(this.raf); this.raf = 0;
+    cancelAnimationFrame(this.raf); this.raf = 0; this.last = 0;
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.canvas.hidden = true;
@@ -389,7 +411,8 @@ class WindAnimation {
       fu[i] = s ? s[0] : NaN; fv[i] = s ? s[1] : NaN;
     }
     this.field = { cols, rows, fu, fv };
-    const target = Math.round(clamp(size.x * size.y / 380, 250, 4000));
+    const uv = this.src.mode === 'uv';
+    const target = Math.round(clamp(size.x * size.y / (uv ? 900 : 450), uv ? 120 : 200, uv ? 1500 : 3500));
     if (this.particles.length > target) this.particles.length = target;
     while (this.particles.length < target) this.particles.push(this._spawn({}, true));
     this.canvas.hidden = false;
@@ -397,7 +420,16 @@ class WindAnimation {
   }
   _spawn(p, initial = false) {
     p.x = Math.random() * this.w; p.y = Math.random() * this.h;
-    p.max = 50 + Math.random() * 70; p.age = initial ? Math.random() * p.max : 0;
+    if (this.src?.mode === 'uv') {
+      // Accettazione proporzionale all'indice UV: più bagliori dove il sole è più forte.
+      for (let k = 0; k < 4; k++) {
+        const f = this.field && this._at(p.x, p.y);
+        if (f && f[0] >= 0.5 && Math.random() * 9 < f[0]) break;
+        p.x = Math.random() * this.w; p.y = Math.random() * this.h;
+      }
+      p.max = 70 + Math.random() * 90; p.ph = Math.random() * 100;
+    } else p.max = 90 + Math.random() * 110;
+    p.age = initial ? Math.random() * p.max : 0;
     return p;
   }
   _at(x, y) {
@@ -412,25 +444,29 @@ class WindAnimation {
   _tick = () => {
     this.raf = requestAnimationFrame(this._tick);
     if (!this.field) return;
+    // Passo normalizzato a 60 Hz: stessa velocità su schermi a frequenza diversa.
+    const now = performance.now(), dt = this.last ? clamp((now - this.last) / (1000 / 60), 0.25, 3) : 1;
+    this.last = now;
     const ctx = this.ctx, { w, h } = this;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    if (this.src.mode === 'uv') return this._tickUV(ctx, w, h, dt);
     // Sfuma le scie esistenti mantenendo la trasparenza del canvas.
     ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.92)';
+    ctx.fillStyle = `rgba(0,0,0,${Math.pow(0.955, dt)})`;
     ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'source-over';
     const B = this.buckets;
     for (const b of B) b.length = 0;
     for (const p of this.particles) {
-      const vel = p.age++ < p.max ? this._at(p.x, p.y) : null;
+      const vel = (p.age += dt) < p.max ? this._at(p.x, p.y) : null;
       if (!vel) { this._spawn(p); continue; }
-      const nx = p.x + vel[0] * PX_PER_KMH, ny = p.y + vel[1] * PX_PER_KMH;
-      const s = Math.hypot(vel[0], vel[1]);
+      const s = Math.hypot(vel[0], vel[1]), k = s > 0 ? windPx(s) / s * dt : 0;
+      const nx = p.x + vel[0] * k, ny = p.y + vel[1] * k;
       B[s < 10 ? 0 : s < 25 ? 1 : s < 45 ? 2 : 3].push(p.x, p.y, nx, ny);
       p.x = nx; p.y = ny;
     }
     ctx.lineCap = 'round';
-    ctx.lineWidth = 1.3;
+    ctx.lineWidth = 1.5;
     const alpha = [0.45, 0.65, 0.85, 1];
     for (let k = 0; k < B.length; k++) {
       const seg = B[k];
@@ -441,9 +477,27 @@ class WindAnimation {
       ctx.stroke();
     }
   };
+  _tickUV(ctx, w, h, dt) {
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of this.particles) {
+      const f = (p.age += dt) < p.max ? this._at(p.x, p.y) : null;
+      if (!f || f[0] < 0.5) { this._spawn(p); continue; }
+      const uv = f[0];
+      p.y -= 0.12 * dt; p.x += Math.sin((p.age + p.ph) / 25) * 0.12 * dt;
+      const a = Math.sin(Math.PI * p.age / p.max) * Math.min(1, 0.3 + uv / 10);
+      const r = 3 + Math.min(1, uv / 11) * 5;
+      ctx.globalAlpha = a * 0.85;
+      ctx.drawImage(this.sprite, p.x - r, p.y - r, 2 * r, 2 * r);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
 }
-const windAnim = new WindAnimation();
-windAnim.setOpacity(prefs.opacity);
+const fieldAnim = new FieldAnimation();
+fieldAnim.setOpacity(prefs.opacity);
 
 const modelLegend = L.control({ position: 'bottomleft' });
 let legendVar = null;
@@ -525,7 +579,7 @@ function scheduleUpdate() {
 
 async function update() {
   const token = ++updateToken;
-  if (prefs.layer !== 'wind') windAnim.stop();
+  if (!ANIMATED.has(prefs.layer)) fieldAnim.stop();
   const c = map.getCenter();
   // Vento e UV esistono solo come dato di modello.
   const cands = prefs.layer === 'precip' ? candidatesAt(state.t, c.lat, c.lng) : [];
@@ -546,22 +600,22 @@ async function update() {
   renderSourceInfo();
   drawTimeline();
 
-  if (!pick) { frames.hide(); windAnim.stop(); setMapNote('Nessuna fonte con dati per questo istante e luogo.'); return; }
+  if (!pick) { frames.hide(); fieldAnim.stop(); setMapNote('Nessuna fonte con dati per questo istante e luogo.'); return; }
   if (pick.s.id === 'openmeteo') {
     setMapNote('Carico la griglia del modello…');
     try {
       await modelGrid.ensure(pick.f.time, () => token !== updateToken);
     } catch (e) {
-      if (token === updateToken) { frames.hide(); windAnim.stop(); setMapNote(e.rateLimited ? e.message : 'Errore modello: ' + e.message); }
+      if (token === updateToken) { frames.hide(); fieldAnim.stop(); setMapNote(e.rateLimited ? e.message : 'Errore modello: ' + e.message); }
       return;
     }
     if (token !== updateToken) return;
     const r = modelGrid.render(pick.f.time);
-    if (!r) { frames.hide(); windAnim.stop(); setMapNote('Ora fuori dalla griglia del modello.'); return; }
+    if (!r) { frames.hide(); fieldAnim.stop(); setMapNote('Ora fuori dalla griglia del modello.'); return; }
     frames.show(r.key, () => L.imageOverlay(r.url, r.bounds, {
       pane: 'radar', interactive: false, attribution: pick.s.attribution, className: 'model-overlay',
     }));
-    if (prefs.layer === 'wind') windAnim.setSource(modelGrid.data, r.idx);
+    if (ANIMATED.has(prefs.layer)) fieldAnim.setSource(modelGrid.data, r.idx, prefs.layer);
     setMapNote(null);
     renderSourceInfo();
   } else {
@@ -962,7 +1016,7 @@ function bindUI() {
 
   const opacity = $('opacity');
   opacity.value = String(prefs.opacity);
-  opacity.addEventListener('input', () => { prefs.opacity = Number(opacity.value); frames.setOpacity(prefs.opacity); windAnim.setOpacity(prefs.opacity); savePrefs(); });
+  opacity.addEventListener('input', () => { prefs.opacity = Number(opacity.value); frames.setOpacity(prefs.opacity); fieldAnim.setOpacity(prefs.opacity); savePrefs(); });
 
   const mode = $('mode');
   mode.append(el('option', { value: 'auto', text: 'Automatica (fonte migliore)' }));
