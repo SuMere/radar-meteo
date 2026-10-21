@@ -33,7 +33,7 @@ export async function safeFetch(url, { as = 'json', timeout = 15000 } = {}) {
     if (final.protocol !== 'https:' || !ALLOWED_HOSTS.has(final.hostname)) {
       throw new Error('Redirect verso host non consentito');
     }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
     const len = Number(r.headers.get('content-length'));
     if (len > MAX_BYTES) throw new Error('Risposta troppo grande');
     const text = await r.text();

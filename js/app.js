@@ -109,11 +109,6 @@ class FrameManager {
   preload(key, factory) { if (!this.cache.has(key)) this._get(key, factory); }
   hide() { this.current = null; for (const o of this.cache.values()) this._visible(o, false); }
   setOpacity(o) { this.opacity = o; if (this.current) this.current.layer.setOpacity(o); }
-  dropPrefix(prefix) {
-    for (const [k, e] of [...this.cache]) {
-      if (k.startsWith(prefix) && e !== this.current) { this._visible(e, true); map.removeLayer(e.layer); this.cache.delete(k); }
-    }
-  }
 }
 const frames = new FrameManager();
 
@@ -123,10 +118,10 @@ const PRECIP_STOPS = [
   [2, [34, 197, 94, 210]], [5, [250, 204, 21, 220]], [10, [249, 115, 22, 230]],
   [20, [239, 68, 68, 235]], [50, [162, 28, 175, 240]],
 ];
-// Vento in km/h (Beaufort approssimato), indice UV con la scala colori OMS.
+// Vento in km/h (rampa continua), indice UV con la scala colori OMS.
 const WIND_STOPS = [
-  [5, [186, 230, 253, 110]], [10, [125, 211, 252, 150]], [20, [52, 211, 153, 170]], [30, [250, 204, 21, 190]],
-  [40, [249, 115, 22, 205]], [60, [239, 68, 68, 220]], [80, [162, 28, 175, 230]], [100, [88, 28, 135, 235]],
+  [0, [98, 113, 183, 150]], [10, [57, 154, 192, 160]], [20, [77, 186, 129, 170]], [30, [180, 200, 70, 175]],
+  [40, [235, 180, 60, 185]], [55, [225, 110, 60, 195]], [70, [200, 60, 90, 205]], [90, [150, 50, 160, 215]],
 ];
 const UV_STOPS = [
   [0.5, [41, 149, 0, 150]], [3, [247, 228, 0, 180]], [6, [248, 89, 0, 200]], [8, [216, 0, 29, 215]], [11, [107, 73, 200, 225]],
@@ -137,13 +132,25 @@ const stepColor = stops => v => {
   return stops[0][1];
 };
 const precipColor = stepColor(PRECIP_STOPS);
+// Interpolazione lineare tra i colori delle soglie.
+const rampColor = stops => v => {
+  if (!Number.isFinite(v)) return [0, 0, 0, 0];
+  if (v <= stops[0][0]) return stops[0][1];
+  for (let i = 1; i < stops.length; i++) {
+    if (v <= stops[i][0]) {
+      const [a, ca] = stops[i - 1], [b, cb] = stops[i], f = (v - a) / (b - a);
+      return ca.map((x, k) => Math.round(x + (cb[k] - x) * f));
+    }
+  }
+  return stops[stops.length - 1][1];
+};
 
 // Variabili del modello visualizzabili. offset: indice orario del valore riferito a [ft, ft+1h]
 // (precipitazione Open-Meteo a T = somma dell'ora precedente; vento e UV sono istantanei).
 const VARS = {
   precip: { params: ['precipitation'], offset: 1, stops: PRECIP_STOPS, color: precipColor, min: 0.05,
     bar: v => Math.min(1, Math.sqrt(v / 10)), legend: 'Modello · pioggia mm/h', barLabel: 'pioggia al centro (modello)' },
-  wind: { params: ['wind_speed_10m', 'wind_direction_10m'], offset: 0, stops: WIND_STOPS, color: stepColor(WIND_STOPS), min: 0,
+  wind: { params: ['wind_speed_10m', 'wind_direction_10m'], offset: 0, stops: WIND_STOPS, color: rampColor(WIND_STOPS), min: 0,
     bar: v => Math.min(1, Math.sqrt(v / 60)), legend: 'Modello · vento a 10 m, km/h', barLabel: 'vento al centro (modello)' },
   uv: { params: ['uv_index'], offset: 0, stops: UV_STOPS, color: stepColor(UV_STOPS), min: 0.05,
     bar: v => Math.min(1, v / 11), legend: 'Modello · indice UV', barLabel: 'indice UV al centro (modello)' },
@@ -181,28 +188,68 @@ function drawWindArrows(ctx, d, idx, cell) {
   }
 }
 
-class ModelGrid {
-  constructor() { this.data = null; this.pending = null; this.renders = new Map(); this.seq = 0; }
-  _fits(b, z, t, v) {
-    const d = this.data;
-    return d && d.var === v && d.bounds.contains(b) && Math.abs(d.zoom - z) < 1.5 && t >= d.t0 && t + HOUR <= d.t0 + (d.len - 1) * HOUR;
+// Open-Meteo conta ogni punto della griglia come una chiamata (limite gratuito: 600/min,
+// 5000/ora, 10000/giorno). Per restare nei limiti: una sola richiesta con tutte le
+// variabili, area e intervallo ampi, cache delle ultime griglie e pausa dopo un 429.
+const GRID_POINTS = 96;
+const GRID_PARAMS = [...new Set(Object.values(VARS).flatMap(v => v.params))];
+const omLimit = {
+  until: 0, backoff: 60e3,
+  check() {
+    const wait = this.until - Date.now();
+    if (wait <= 0) return;
+    const e = new Error(`Troppe richieste a Open-Meteo: nuovo tentativo tra ${Math.ceil(wait / 1000)} s`);
+    e.rateLimited = true;
+    throw e;
+  },
+  hit() {
+    if (this.until > Date.now()) return; // già in pausa (altra richiesta concorrente)
+    this.until = Date.now() + this.backoff;
+    setTimeout(() => { scheduleUpdate(); schedulePointFetch(); }, this.backoff + 500);
+    this.backoff = Math.min(this.backoff * 2, 10 * MIN);
+  },
+  ok() { this.backoff = 60e3; },
+};
+async function omFetch(url, opts) {
+  omLimit.check();
+  try {
+    const res = await safeFetch(url, opts);
+    omLimit.ok();
+    return res;
+  } catch (e) {
+    if (e.status === 429) { omLimit.hit(); omLimit.check(); }
+    throw e;
   }
-  async ensure(t) {
-    const b = map.getBounds(), z = map.getZoom(), v = prefs.layer;
-    if (this._fits(b, z, t, v)) return this.data;
-    if (this.pending) {
+}
+
+class ModelGrid {
+  constructor() { this.data = null; this.cache = []; this.pending = null; this.renders = new Map(); this.seq = 0; }
+  // Una griglia va bene se copre la vista, l'ora richiesta e non è troppo grossolana per lo zoom.
+  _fits(d, b, z, t) {
+    return d && d.bounds.contains(b) && z - d.zoom <= 2 && t >= d.t0 && t + HOUR <= d.t0 + (d.len - 1) * HOUR;
+  }
+  _find(b, z, t) {
+    const d = this.cache.find(g => this._fits(g, b, z, t));
+    if (d) this.data = d;
+    return d;
+  }
+  async ensure(t, stale = () => false) {
+    const b = map.getBounds(), z = map.getZoom();
+    if (this._find(b, z, t)) return this.data;
+    while (this.pending) {
       await this.pending.catch(() => {});
-      if (this._fits(b, z, t, v)) return this.data;
+      if (this._find(b, z, t)) return this.data;
     }
-    this.pending = this._fetch(b.pad(0.3), z, t, v);
+    if (stale()) throw new Error('superato'); // la vista è già cambiata: non sprecare una richiesta
+    this.pending = this._fetch(b.pad(0.5), z, t);
     try { return await this.pending; } finally { this.pending = null; }
   }
-  async _fetch(pb, z, t, v) {
+  async _fetch(pb, z, t) {
     const s = Math.max(-84, pb.getSouth()), n = Math.min(84, pb.getNorth());
     let w = pb.getWest(), e = pb.getEast();
     if (e - w > 360) { w = -180; e = 180; }
     const size = map.getSize(), aspect = clamp(size.x / Math.max(1, size.y), 0.4, 3);
-    const ny = clamp(Math.round(Math.sqrt(120 / aspect)), 4, 15), nx = clamp(Math.floor(120 / ny), 4, 20);
+    const ny = clamp(Math.round(Math.sqrt(GRID_POINTS / aspect)), 4, 14), nx = clamp(Math.floor(GRID_POINTS / ny), 4, 18);
     const lats = [], lons = [];
     for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) {
       lats.push((n - (r + 0.5) * (n - s) / ny).toFixed(3));
@@ -210,29 +257,29 @@ class ModelGrid {
       lon = ((lon + 540) % 360) - 180;
       lons.push(lon.toFixed(3));
     }
-    const h0 = floorTo(t, 60) - DAY, h1 = floorTo(t, 60) + 2 * DAY;
+    const h0 = floorTo(t, 60) - 2 * DAY, h1 = floorTo(t, 60) + 4 * DAY; // < 2 settimane: 1 chiamata per punto
     const hh = x => isoZ(x).slice(0, 16);
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}` +
-      `&hourly=${VARS[v].params.join(',')}&timezone=GMT&models=best_match&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
-    const { body } = await safeFetch(url, { timeout: 25000 });
+      `&hourly=${GRID_PARAMS.join(',')}&timezone=GMT&models=best_match&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
+    const { body } = await omFetch(url, { timeout: 25000 });
     const arr = Array.isArray(body) ? body : [body];
     if (arr.length !== nx * ny) throw new Error('Griglia incompleta');
     const times = arr[0]?.hourly?.time;
     if (!Array.isArray(times) || !times.length) throw new Error('Griglia senza dati');
     const t0 = Date.parse(times[0] + 'Z');
     const values = {};
-    for (const p of VARS[v].params) values[p] = arr.map(pt => (pt.hourly?.[p] || []).map(x => (Number.isFinite(x) ? x : NaN)));
-    this.data = { id: ++this.seq, var: v, bounds: L.latLngBounds([s, w], [n, e]), zoom: z, nx, ny, t0, len: times.length, values };
-    this.renders.clear();
-    frames.dropPrefix('om:');
+    for (const p of GRID_PARAMS) values[p] = arr.map(pt => (pt.hourly?.[p] || []).map(x => (Number.isFinite(x) ? x : NaN)));
+    this.data = { id: ++this.seq, bounds: L.latLngBounds([s, w], [n, e]), zoom: z, nx, ny, t0, len: times.length, values };
+    this.cache = [this.data, ...this.cache].slice(0, 4);
+    if (this.renders.size > 150) this.renders.clear();
     return this.data;
   }
   // Valore della variabile corrente per l'ora [ft, ft+1h].
   render(ft) {
-    const d = this.data, cfg = VARS[d.var];
+    const d = this.data, v = prefs.layer, cfg = VARS[v];
     const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
     if (idx < 0 || idx >= d.len) return null;
-    const key = `om:${d.id}:${idx}`;
+    const key = `om:${d.id}:${v}:${idx}`;
     if (this.renders.has(key)) return this.renders.get(key);
     const main = d.values[cfg.params[0]];
     const small = document.createElement('canvas');
@@ -241,21 +288,22 @@ class ModelGrid {
     const img = sctx.createImageData(d.nx, d.ny);
     for (let i = 0; i < d.nx * d.ny; i++) img.data.set(cfg.color(main[i][idx]), i * 4);
     sctx.putImageData(img, 0, 0);
-    const cell = d.var === 'wind' ? 64 : 24; // più risoluzione per frecce nitide
+    const arrows = v === 'wind' && !windAnim.enabled; // frecce statiche solo con "riduci movimento"
+    const cell = arrows ? 64 : 24; // più risoluzione per frecce nitide
     const big = document.createElement('canvas');
     big.width = d.nx * cell; big.height = d.ny * cell;
     const bctx = big.getContext('2d');
     bctx.imageSmoothingEnabled = true; bctx.imageSmoothingQuality = 'high';
     bctx.drawImage(small, 0, 0, big.width, big.height);
-    if (d.var === 'wind') drawWindArrows(bctx, d, idx, cell);
-    const out = { key, url: big.toDataURL('image/png'), bounds: d.bounds };
+    if (arrows) drawWindArrows(bctx, d, idx, cell);
+    const out = { key, idx, url: big.toDataURL('image/png'), bounds: d.bounds };
     this.renders.set(key, out);
     return out;
   }
   valueAt(lat, lon, ft) {
     const d = this.data;
     if (!d || !d.bounds.contains([lat, lon])) return null;
-    const cfg = VARS[d.var];
+    const cfg = VARS[prefs.layer];
     const r = Math.floor((d.bounds.getNorth() - lat) / (d.bounds.getNorth() - d.bounds.getSouth()) * d.ny);
     const c = Math.floor((lon - d.bounds.getWest()) / (d.bounds.getEast() - d.bounds.getWest()) * d.nx);
     const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
@@ -263,6 +311,139 @@ class ModelGrid {
   }
 }
 const modelGrid = new ModelGrid();
+
+// ------------------------------------------------------------------ vento animato
+// Particelle trasportate dal campo di vento del modello, con scie che sfumano.
+// Il campo (u, v in km/h) è interpolato bilinearmente dalla griglia su una maglia di
+// pixel dello schermo, ricostruita a ogni spostamento della mappa o cambio d'ora.
+const FIELD_STEP = 8;    // px tra i nodi della maglia
+const PX_PER_KMH = 0.045; // velocità visiva: px per frame per km/h
+class WindAnimation {
+  constructor() {
+    this.canvas = el('canvas', { class: 'wind-canvas', 'aria-hidden': 'true' });
+    this.canvas.hidden = true;
+    map.getContainer().append(this.canvas);
+    this.ctx = this.canvas.getContext('2d');
+    this.src = null; this.field = null; this.particles = []; this.raf = 0; this.moving = false;
+    this.reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    this.buckets = [[], [], [], []];
+    map.on('movestart zoomstart', () => { this.moving = true; this._pause(); });
+    map.on('moveend', () => { this.moving = false; this._rebuild(); });
+    map.on('resize', () => this._rebuild());
+  }
+  get enabled() { return !this.reduced.matches; }
+  setOpacity(o) { this.canvas.style.opacity = String(0.4 + 0.6 * o); }
+  setSource(d, idx) {
+    if (!this.enabled) return this.stop();
+    if (this.src?.d === d && this.src.idx === idx) return;
+    // u, v per cella: componenti verso cui soffia (x = est, y = sud sullo schermo).
+    const n = d.nx * d.ny, u = new Float32Array(n), v = new Float32Array(n);
+    const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
+    for (let i = 0; i < n; i++) {
+      const s = sp[i][idx], a = dir[i][idx];
+      if (!Number.isFinite(s) || !Number.isFinite(a)) { u[i] = v[i] = NaN; continue; }
+      const b = (a + 180) * Math.PI / 180;
+      u[i] = s * Math.sin(b); v[i] = -s * Math.cos(b);
+    }
+    this.src = { d, idx, u, v };
+    this._rebuild();
+  }
+  stop() {
+    if (!this.src) return;
+    this.src = null; this.field = null;
+    this._pause();
+  }
+  _pause() {
+    cancelAnimationFrame(this.raf); this.raf = 0;
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.canvas.hidden = true;
+    this.particles = [];
+  }
+  // Campo della griglia (bilineare tra i centri delle celle) in un punto geografico.
+  _sample(lat, lon) {
+    const { d, u, v } = this.src, b = d.bounds;
+    const fr = (b.getNorth() - lat) / (b.getNorth() - b.getSouth()) * d.ny - 0.5;
+    const fc = (lon - b.getWest()) / (b.getEast() - b.getWest()) * d.nx - 0.5;
+    if (fr < -0.5 || fr > d.ny - 0.5 || fc < -0.5 || fc > d.nx - 0.5) return null;
+    const r = clamp(fr, 0, d.ny - 1), c = clamp(fc, 0, d.nx - 1);
+    const r0 = Math.floor(r), c0 = Math.floor(c), r1 = Math.min(r0 + 1, d.ny - 1), c1 = Math.min(c0 + 1, d.nx - 1);
+    const fy = r - r0, fx = c - c0;
+    const i00 = r0 * d.nx + c0, i01 = r0 * d.nx + c1, i10 = r1 * d.nx + c0, i11 = r1 * d.nx + c1;
+    const mix = a => (a[i00] * (1 - fx) + a[i01] * fx) * (1 - fy) + (a[i10] * (1 - fx) + a[i11] * fx) * fy;
+    const uu = mix(u), vv = mix(v);
+    return Number.isFinite(uu) && Number.isFinite(vv) ? [uu, vv] : null;
+  }
+  _rebuild() {
+    if (!this.src || this.moving) return;
+    const size = map.getSize(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (!size.x || !size.y) return;
+    this.w = size.x; this.h = size.y; this.dpr = dpr;
+    const cw = Math.round(size.x * dpr), ch = Math.round(size.y * dpr);
+    if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
+    const cols = Math.ceil(size.x / FIELD_STEP) + 1, rows = Math.ceil(size.y / FIELD_STEP) + 1;
+    const fu = new Float32Array(cols * rows), fv = new Float32Array(cols * rows);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const ll = map.containerPointToLatLng([x * FIELD_STEP, y * FIELD_STEP]);
+      const s = this._sample(ll.lat, ll.lng), i = y * cols + x;
+      fu[i] = s ? s[0] : NaN; fv[i] = s ? s[1] : NaN;
+    }
+    this.field = { cols, rows, fu, fv };
+    const target = Math.round(clamp(size.x * size.y / 380, 250, 4000));
+    if (this.particles.length > target) this.particles.length = target;
+    while (this.particles.length < target) this.particles.push(this._spawn({}, true));
+    this.canvas.hidden = false;
+    if (!this.raf) this.raf = requestAnimationFrame(this._tick);
+  }
+  _spawn(p, initial = false) {
+    p.x = Math.random() * this.w; p.y = Math.random() * this.h;
+    p.max = 50 + Math.random() * 70; p.age = initial ? Math.random() * p.max : 0;
+    return p;
+  }
+  _at(x, y) {
+    const f = this.field, gx = x / FIELD_STEP, gy = y / FIELD_STEP;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    if (x0 < 0 || y0 < 0 || x0 >= f.cols - 1 || y0 >= f.rows - 1) return null;
+    const fx = gx - x0, fy = gy - y0, i = y0 * f.cols + x0;
+    const mix = a => (a[i] * (1 - fx) + a[i + 1] * fx) * (1 - fy) + (a[i + f.cols] * (1 - fx) + a[i + f.cols + 1] * fx) * fy;
+    const u = mix(f.fu), v = mix(f.fv);
+    return Number.isFinite(u) && Number.isFinite(v) ? [u, v] : null;
+  }
+  _tick = () => {
+    this.raf = requestAnimationFrame(this._tick);
+    if (!this.field) return;
+    const ctx = this.ctx, { w, h } = this;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    // Sfuma le scie esistenti mantenendo la trasparenza del canvas.
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.fillStyle = 'rgba(0,0,0,0.92)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+    const B = this.buckets;
+    for (const b of B) b.length = 0;
+    for (const p of this.particles) {
+      const vel = p.age++ < p.max ? this._at(p.x, p.y) : null;
+      if (!vel) { this._spawn(p); continue; }
+      const nx = p.x + vel[0] * PX_PER_KMH, ny = p.y + vel[1] * PX_PER_KMH;
+      const s = Math.hypot(vel[0], vel[1]);
+      B[s < 10 ? 0 : s < 25 ? 1 : s < 45 ? 2 : 3].push(p.x, p.y, nx, ny);
+      p.x = nx; p.y = ny;
+    }
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 1.3;
+    const alpha = [0.45, 0.65, 0.85, 1];
+    for (let k = 0; k < B.length; k++) {
+      const seg = B[k];
+      if (!seg.length) continue;
+      ctx.strokeStyle = `rgba(255,255,255,${alpha[k]})`;
+      ctx.beginPath();
+      for (let i = 0; i < seg.length; i += 4) { ctx.moveTo(seg[i], seg[i + 1]); ctx.lineTo(seg[i + 2], seg[i + 3]); }
+      ctx.stroke();
+    }
+  };
+}
+const windAnim = new WindAnimation();
+windAnim.setOpacity(prefs.opacity);
 
 const modelLegend = L.control({ position: 'bottomleft' });
 let legendVar = null;
@@ -276,9 +457,14 @@ modelLegend.onAdd = () => {
   }
   return box;
 };
+// Su schermi piccoli la legenda va in alto a destra, lontano dall'attribuzione.
+const compactMQ = window.matchMedia('(max-width: 700px), (max-height: 500px)');
+const legendPos = () => (compactMQ.matches ? 'topright' : 'bottomleft');
+compactMQ.addEventListener('change', () => modelLegend.setPosition(legendPos()));
 function showModelLegend(on) {
   const v = on ? prefs.layer : null;
   if (v === legendVar) return;
+  modelLegend.setPosition(legendPos());
   if (legendVar) modelLegend.remove();
   legendVar = v;
   if (v) modelLegend.addTo(map);
@@ -339,6 +525,7 @@ function scheduleUpdate() {
 
 async function update() {
   const token = ++updateToken;
+  if (prefs.layer !== 'wind') windAnim.stop();
   const c = map.getCenter();
   // Vento e UV esistono solo come dato di modello.
   const cands = prefs.layer === 'precip' ? candidatesAt(state.t, c.lat, c.lng) : [];
@@ -359,21 +546,22 @@ async function update() {
   renderSourceInfo();
   drawTimeline();
 
-  if (!pick) { frames.hide(); setMapNote('Nessuna fonte con dati per questo istante e luogo.'); return; }
+  if (!pick) { frames.hide(); windAnim.stop(); setMapNote('Nessuna fonte con dati per questo istante e luogo.'); return; }
   if (pick.s.id === 'openmeteo') {
     setMapNote('Carico la griglia del modello…');
     try {
-      await modelGrid.ensure(pick.f.time);
+      await modelGrid.ensure(pick.f.time, () => token !== updateToken);
     } catch (e) {
-      if (token === updateToken) { frames.hide(); setMapNote('Errore modello: ' + e.message); }
+      if (token === updateToken) { frames.hide(); windAnim.stop(); setMapNote(e.rateLimited ? e.message : 'Errore modello: ' + e.message); }
       return;
     }
     if (token !== updateToken) return;
     const r = modelGrid.render(pick.f.time);
-    if (!r) { frames.hide(); setMapNote('Ora fuori dalla griglia del modello.'); return; }
+    if (!r) { frames.hide(); windAnim.stop(); setMapNote('Ora fuori dalla griglia del modello.'); return; }
     frames.show(r.key, () => L.imageOverlay(r.url, r.bounds, {
       pane: 'radar', interactive: false, attribution: pick.s.attribution, className: 'model-overlay',
     }));
+    if (prefs.layer === 'wind') windAnim.setSource(modelGrid.data, r.idx);
     setMapNote(null);
     renderSourceInfo();
   } else {
@@ -458,7 +646,9 @@ function renderConditions(box, p) {
   const ws = pointValueAt(state.t, 'wind_speed_10m'), wd = pointValueAt(state.t, 'wind_direction_10m');
   const wg = pointValueAt(state.t, 'wind_gusts_10m');
   if (ws != null) parts.push(`vento ${Math.round(ws)} km/h${wd != null ? ' da ' + compass(wd) : ''}${wg != null ? `, raffiche ${Math.round(wg)}` : ''}`);
-  if (parts.length) box.append(el('span', { class: 'muted', text: ' · al centro (modello): ' + parts.join(' · ') }));
+  const cond = el('span', { class: 'cond' });
+  box.append(cond);
+  if (parts.length) cond.append(el('span', { class: 'muted', text: ' · al centro (modello): ' + parts.join(' · ') }));
   const uv = pointValueAt(state.t, 'uv_index');
   if (uv == null) return;
   const cat = uvCategory(uv), max = uvDayMax(state.t);
@@ -467,7 +657,7 @@ function renderConditions(box, p) {
   const col = UV_STOPS.findLast(st => Math.max(uv, 0.5) >= st[0])[1];
   badge.style.background = `rgb(${col[0]},${col[1]},${col[2]})`;
   badge.style.color = uv >= 8 || uv < 3 ? '#fff' : '#111';
-  box.append(badge, el('span', { class: 'muted', text: maxTxt }));
+  cond.append(badge, el('span', { class: 'muted', text: maxTxt }));
 }
 
 function uvDayMax(t) {
@@ -496,7 +686,7 @@ async function fetchPoint() {
   if (point && map.distance([point.lat, point.lon], c) < 5000) return;
   const lat = c.lat.toFixed(3), lon = (((c.lng + 540) % 360) - 180).toFixed(3);
   try {
-    const { body } = await safeFetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    const { body } = await omFetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
       `&hourly=${POINT_PARAMS.join(',')}&past_days=15&forecast_days=16&timezone=GMT&models=best_match`);
     const times = body?.hourly?.time;
     if (!Array.isArray(times) || !Array.isArray(body.hourly.precipitation)) throw new Error('dati mancanti');
@@ -506,7 +696,9 @@ async function fetchPoint() {
       series[p] = vals.map(v => (Number.isFinite(v) ? v : NaN));
     }
     point = { lat: c.lat, lon: c.lng, t0: Date.parse(times[0] + 'Z'), series };
-  } catch { point = null; }
+  } catch (e) {
+    if (!e.rateLimited) point = null; // con il limite raggiunto si tiene l'ultima serie: si riprova dopo la pausa
+  }
   drawTimeline();
   renderSourceInfo();
 }
@@ -552,7 +744,7 @@ function drawTimeline() {
   ctx.globalAlpha = 1;
 
   // Variabile corrente al centro (modello) – barre orarie
-  const barBase = h - 13, barMax = barBase - 26;
+  const barBase = h - 13, barMax = barBase - Math.min(26, h * 0.4);
   const cfg = VARS[prefs.layer], ser = point?.series[cfg.params[0]];
   if (ser) {
     for (let i = cfg.offset; i < ser.length; i++) {
@@ -770,7 +962,7 @@ function bindUI() {
 
   const opacity = $('opacity');
   opacity.value = String(prefs.opacity);
-  opacity.addEventListener('input', () => { prefs.opacity = Number(opacity.value); frames.setOpacity(prefs.opacity); savePrefs(); });
+  opacity.addEventListener('input', () => { prefs.opacity = Number(opacity.value); frames.setOpacity(prefs.opacity); windAnim.setOpacity(prefs.opacity); savePrefs(); });
 
   const mode = $('mode');
   mode.append(el('option', { value: 'auto', text: 'Automatica (fonte migliore)' }));
@@ -810,6 +1002,14 @@ function bindUI() {
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
   });
 
+  // Menu impostazioni (solo layout mobile; su desktop i controlli sono sempre visibili).
+  const menu = $('btn-menu'), settings = $('settings');
+  const setMenu = open => { settings.classList.toggle('open', open); menu.setAttribute('aria-expanded', String(open)); menu.classList.toggle('active', open); };
+  menu.addEventListener('click', e => { e.stopPropagation(); setMenu(!settings.classList.contains('open')); });
+  document.addEventListener('click', e => { if (!e.target.closest('#settings, #btn-menu')) setMenu(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
+  $('btn-ratings').addEventListener('click', () => setMenu(false));
+
   $('btn-ratings').addEventListener('click', () => {
     const p = $('ratings');
     p.hidden = !p.hidden;
@@ -838,6 +1038,8 @@ function bindUI() {
     scheduleUpdate();
   });
   window.addEventListener('resize', drawTimeline);
+  // Su mobile l'altezza della mappa cambia con le righe della barra inferiore e con le barre del browser.
+  new ResizeObserver(() => { map.invalidateSize({ pan: false }); drawTimeline(); }).observe($('map'));
 }
 
 // ------------------------------------------------------------------ avvio

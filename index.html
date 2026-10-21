@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov; connect-src https://api.rainviewer.com https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov https://api.open-meteo.com https://geocoding-api.open-meteo.com; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="strict-origin">
 <title>Radar Meteo</title>
@@ -19,9 +19,11 @@
     <ul id="search-results" class="results" hidden></ul>
   </div>
   <button id="btn-locate" title="Usa la mia posizione">📍</button>
-  <label class="ctl">Dato
+  <label class="ctl ctl-layer"><span class="ctl-label">Dato</span>
     <select id="layer" aria-label="Dato visualizzato"><option value="precip">Pioggia</option><option value="wind">Vento</option><option value="uv">Indice UV</option></select>
   </label>
+  <button id="btn-menu" class="menu-btn" title="Impostazioni" aria-label="Impostazioni" aria-expanded="false" aria-controls="settings">☰</button>
+  <div id="settings" class="settings">
   <label class="ctl">Fonte
     <select id="mode" aria-label="Fonte dati"></select>
   </label>
@@ -32,6 +34,7 @@
     <select id="basemap"><option value="light">Chiara</option><option value="dark">Scura</option><option value="osm">OpenStreetMap</option></select>
   </label>
   <button id="btn-ratings" title="Rating delle fonti">★ Fonti</button>
+  </div>
 </header>
 
 <main class="map-wrap">

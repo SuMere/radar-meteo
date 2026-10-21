@@ -73,8 +73,8 @@ una fonte specifica.
 
 ## Vento e UV
 
-Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore, frecce
-nella direzione verso cui soffia) o **indice UV** (scala colori OMS). Questi dati
+Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore e particelle
+animate che seguono il flusso; frecce statiche se il sistema chiede di ridurre le animazioni) o **indice UV** (scala colori OMS). Questi dati
 esistono solo come modello (Open-Meteo), quindi in quelle modalità la fonte è
 sempre il modello, orario, per ±15 giorni. Sotto l'orario sono sempre indicati,
 per il centro della mappa, pioggia, vento (con direzione e raffiche) e indice UV
