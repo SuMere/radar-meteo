@@ -19,6 +19,9 @@
     <ul id="search-results" class="results" hidden></ul>
   </div>
   <button id="btn-locate" title="Usa la mia posizione">📍</button>
+  <label class="ctl">Dato
+    <select id="layer" aria-label="Dato visualizzato"><option value="precip">Pioggia</option><option value="wind">Vento</option><option value="uv">Indice UV</option></select>
+  </label>
   <label class="ctl">Fonte
     <select id="mode" aria-label="Fonte dati"></select>
   </label>
@@ -60,6 +63,10 @@
 <footer class="timebar">
   <div class="time-row">
     <div class="time"><span id="time-main"></span> <span id="time-rel" class="muted"></span></div>
+    <div class="goto">
+      <input id="goto-time" type="datetime-local" step="60" aria-label="Vai a data e ora (ora locale)" title="Vai a data e ora precise (ora locale, ±15 giorni)">
+      <button id="btn-goto" title="Vai alla data e ora indicate (Invio)">Vai</button>
+    </div>
     <div class="buttons">
       <button id="btn-day-back" title="-1 giorno">−1g</button>
       <button id="btn-prev" title="Frame precedente (←, Maiusc+← = −1 h)">«</button>

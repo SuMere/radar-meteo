@@ -64,12 +64,17 @@ button:disabled { opacity: .5; cursor: wait; }
 .time-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .time { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .time .muted { font-size: 14px; font-weight: 400; }
+.goto { display: flex; align-items: center; gap: 4px; }
+.goto input { padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color-scheme: light; }
+body.dark .goto input { color-scheme: dark; }
+.goto input:invalid { border-color: #ef4444; }
 .buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 .source-info { margin: 4px 0; min-height: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
 .source-info .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); }
 .badge.radar { background: #dcfce7; color: #14532d; border-color: #86efac; }
 .badge.satellite { background: #e0f2fe; color: #0c4a6e; border-color: #7dd3fc; }
+.badge.uv { margin-left: 4px; border-color: transparent; font-weight: 600; }
 .badge.model { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
 .timeline { display: block; width: 100%; height: 64px; cursor: pointer; touch-action: none; }
 .slider { display: block; width: 100%; margin: 2px 0; accent-color: var(--accent); }

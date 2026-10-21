@@ -71,10 +71,22 @@ previsioni lontane sono penalizzati. Il pannello **★ Fonti** mostra i rating,
 lo storico delle sonde e permette di escludere fonti; il menu **Fonte** forza
 una fonte specifica.
 
+## Vento e UV
+
+Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore, frecce
+nella direzione verso cui soffia) o **indice UV** (scala colori OMS). Questi dati
+esistono solo come modello (Open-Meteo), quindi in quelle modalità la fonte è
+sempre il modello, orario, per ±15 giorni. Sotto l'orario sono sempre indicati,
+per il centro della mappa, pioggia, vento (con direzione e raffiche) e indice UV
+con la categoria di esposizione, il consiglio di protezione (al passaggio del
+mouse) e il picco UV del giorno.
+
 ## Comandi
 
 - slider/timeline: trascina o clicca; la timeline mostra la disponibilità di
   ogni fonte e la pioggia oraria prevista/stimata al centro della mappa
+- **Vai a**: scegli data e ora precise (ora locale, entro ±15 giorni) e premi
+  **Vai** o `Invio`
 - `←` `→` frame precedente/successivo, `Maiusc+←/→` ±1 ora, `spazio` play/pausa
 - **⟲ 2h**: animazione in loop delle ultime 2 ore · **● Adesso**: segue l'ultimo dato in tempo reale
 

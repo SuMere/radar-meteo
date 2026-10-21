@@ -20,6 +20,7 @@ const prefs = (() => {
     place: typeof p.place === 'string' ? p.place.slice(0, 120) : 'Torino, Piemonte, Italia',
     opacity: clamp(num(p.opacity, 0.8), 0.1, 1),
     basemap: ['dark', 'osm'].includes(p.basemap) ? p.basemap : 'light',
+    layer: ['wind', 'uv'].includes(p.layer) ? p.layer : 'precip',
     mode: typeof p.mode === 'string' && (p.mode === 'auto' || byId[p.mode]) ? p.mode : 'auto',
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
   };
@@ -122,29 +123,81 @@ const PRECIP_STOPS = [
   [2, [34, 197, 94, 210]], [5, [250, 204, 21, 220]], [10, [249, 115, 22, 230]],
   [20, [239, 68, 68, 235]], [50, [162, 28, 175, 240]],
 ];
-function precipColor(mm) {
-  if (!(mm >= PRECIP_STOPS[0][0])) return [0, 0, 0, 0];
-  for (let i = PRECIP_STOPS.length - 1; i >= 0; i--) if (mm >= PRECIP_STOPS[i][0]) return PRECIP_STOPS[i][1];
-  return PRECIP_STOPS[0][1];
+// Vento in km/h (Beaufort approssimato), indice UV con la scala colori OMS.
+const WIND_STOPS = [
+  [5, [186, 230, 253, 110]], [10, [125, 211, 252, 150]], [20, [52, 211, 153, 170]], [30, [250, 204, 21, 190]],
+  [40, [249, 115, 22, 205]], [60, [239, 68, 68, 220]], [80, [162, 28, 175, 230]], [100, [88, 28, 135, 235]],
+];
+const UV_STOPS = [
+  [0.5, [41, 149, 0, 150]], [3, [247, 228, 0, 180]], [6, [248, 89, 0, 200]], [8, [216, 0, 29, 215]], [11, [107, 73, 200, 225]],
+];
+const stepColor = stops => v => {
+  if (!(v >= stops[0][0])) return [0, 0, 0, 0];
+  for (let i = stops.length - 1; i >= 0; i--) if (v >= stops[i][0]) return stops[i][1];
+  return stops[0][1];
+};
+const precipColor = stepColor(PRECIP_STOPS);
+
+// Variabili del modello visualizzabili. offset: indice orario del valore riferito a [ft, ft+1h]
+// (precipitazione Open-Meteo a T = somma dell'ora precedente; vento e UV sono istantanei).
+const VARS = {
+  precip: { params: ['precipitation'], offset: 1, stops: PRECIP_STOPS, color: precipColor, min: 0.05,
+    bar: v => Math.min(1, Math.sqrt(v / 10)), legend: 'Modello · pioggia mm/h', barLabel: 'pioggia al centro (modello)' },
+  wind: { params: ['wind_speed_10m', 'wind_direction_10m'], offset: 0, stops: WIND_STOPS, color: stepColor(WIND_STOPS), min: 0,
+    bar: v => Math.min(1, Math.sqrt(v / 60)), legend: 'Modello · vento a 10 m, km/h', barLabel: 'vento al centro (modello)' },
+  uv: { params: ['uv_index'], offset: 0, stops: UV_STOPS, color: stepColor(UV_STOPS), min: 0.05,
+    bar: v => Math.min(1, v / 11), legend: 'Modello · indice UV', barLabel: 'indice UV al centro (modello)' },
+};
+
+const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO'];
+const compass = deg => COMPASS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+
+function uvCategory(v) {
+  if (v < 3) return { label: 'basso', advice: 'Nessuna protezione necessaria.' };
+  if (v < 6) return { label: 'moderato', advice: 'Protezione consigliata: crema solare, cappello e occhiali; ombra nelle ore centrali.' };
+  if (v < 8) return { label: 'alto', advice: 'Protezione necessaria: crema SPF 30+, cappello, occhiali; riduci l\'esposizione tra le 11 e le 16.' };
+  if (v < 11) return { label: 'molto alto', advice: 'Protezione indispensabile: evita il sole nelle ore centrali, crema SPF 50+.' };
+  return { label: 'estremo', advice: 'Evita l\'esposizione: la pelle non protetta si scotta in pochi minuti.' };
+}
+
+// Frecce del vento (direzione verso cui soffia) al centro di ogni cella della griglia.
+function drawWindArrows(ctx, d, idx, cell) {
+  const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let r = 0; r < d.ny; r++) for (let c = 0; c < d.nx; c++) {
+    const i = r * d.nx + c, s = sp[i][idx], a = dir[i][idx];
+    if (!Number.isFinite(s) || !Number.isFinite(a) || s < 1) continue;
+    const b = (a + 180) * Math.PI / 180, dx = Math.sin(b), dy = -Math.cos(b);
+    const k = cell / 24, len = (4 + Math.min(1, s / 60) * 6) * k, cx = (c + 0.5) * cell, cy = (r + 0.5) * cell;
+    const hx = cx + dx * len, hy = cy + dy * len;
+    const path = new Path2D();
+    path.moveTo(cx - dx * len, cy - dy * len); path.lineTo(hx, hy);
+    for (const rot of [0.5, -0.5]) {
+      const bx = -dx * Math.cos(rot) + dy * Math.sin(rot), by = -dx * Math.sin(rot) - dy * Math.cos(rot);
+      path.moveTo(hx, hy); path.lineTo(hx + bx * 4 * k, hy + by * 4 * k);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 3 * k; ctx.stroke(path);
+    ctx.strokeStyle = 'rgba(15,23,42,0.9)'; ctx.lineWidth = 1.4 * k; ctx.stroke(path);
+  }
 }
 
 class ModelGrid {
   constructor() { this.data = null; this.pending = null; this.renders = new Map(); this.seq = 0; }
-  _fits(b, z, t) {
+  _fits(b, z, t, v) {
     const d = this.data;
-    return d && d.bounds.contains(b) && Math.abs(d.zoom - z) < 1.5 && t >= d.t0 && t + HOUR <= d.t0 + (d.len - 1) * HOUR;
+    return d && d.var === v && d.bounds.contains(b) && Math.abs(d.zoom - z) < 1.5 && t >= d.t0 && t + HOUR <= d.t0 + (d.len - 1) * HOUR;
   }
   async ensure(t) {
-    const b = map.getBounds(), z = map.getZoom();
-    if (this._fits(b, z, t)) return this.data;
+    const b = map.getBounds(), z = map.getZoom(), v = prefs.layer;
+    if (this._fits(b, z, t, v)) return this.data;
     if (this.pending) {
       await this.pending.catch(() => {});
-      if (this._fits(b, z, t)) return this.data;
+      if (this._fits(b, z, t, v)) return this.data;
     }
-    this.pending = this._fetch(b.pad(0.3), z, t);
+    this.pending = this._fetch(b.pad(0.3), z, t, v);
     try { return await this.pending; } finally { this.pending = null; }
   }
-  async _fetch(pb, z, t) {
+  async _fetch(pb, z, t, v) {
     const s = Math.max(-84, pb.getSouth()), n = Math.min(84, pb.getNorth());
     let w = pb.getWest(), e = pb.getEast();
     if (e - w > 360) { w = -180; e = 180; }
@@ -160,37 +213,41 @@ class ModelGrid {
     const h0 = floorTo(t, 60) - DAY, h1 = floorTo(t, 60) + 2 * DAY;
     const hh = x => isoZ(x).slice(0, 16);
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}` +
-      `&hourly=precipitation&timezone=GMT&models=best_match&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
+      `&hourly=${VARS[v].params.join(',')}&timezone=GMT&models=best_match&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
     const { body } = await safeFetch(url, { timeout: 25000 });
     const arr = Array.isArray(body) ? body : [body];
     if (arr.length !== nx * ny) throw new Error('Griglia incompleta');
     const times = arr[0]?.hourly?.time;
     if (!Array.isArray(times) || !times.length) throw new Error('Griglia senza dati');
     const t0 = Date.parse(times[0] + 'Z');
-    const values = arr.map(p => (p.hourly?.precipitation || []).map(v => (Number.isFinite(v) ? v : NaN)));
-    this.data = { id: ++this.seq, bounds: L.latLngBounds([s, w], [n, e]), zoom: z, nx, ny, t0, len: times.length, values };
+    const values = {};
+    for (const p of VARS[v].params) values[p] = arr.map(pt => (pt.hourly?.[p] || []).map(x => (Number.isFinite(x) ? x : NaN)));
+    this.data = { id: ++this.seq, var: v, bounds: L.latLngBounds([s, w], [n, e]), zoom: z, nx, ny, t0, len: times.length, values };
     this.renders.clear();
     frames.dropPrefix('om:');
     return this.data;
   }
-  // Precipitazione nell'ora [ft, ft+1h] (Open-Meteo: valore a T = somma dell'ora precedente).
+  // Valore della variabile corrente per l'ora [ft, ft+1h].
   render(ft) {
-    const d = this.data;
-    const idx = Math.round((ft - d.t0) / HOUR) + 1;
+    const d = this.data, cfg = VARS[d.var];
+    const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
     if (idx < 0 || idx >= d.len) return null;
     const key = `om:${d.id}:${idx}`;
     if (this.renders.has(key)) return this.renders.get(key);
+    const main = d.values[cfg.params[0]];
     const small = document.createElement('canvas');
     small.width = d.nx; small.height = d.ny;
     const sctx = small.getContext('2d');
     const img = sctx.createImageData(d.nx, d.ny);
-    for (let i = 0; i < d.nx * d.ny; i++) img.data.set(precipColor(d.values[i][idx]), i * 4);
+    for (let i = 0; i < d.nx * d.ny; i++) img.data.set(cfg.color(main[i][idx]), i * 4);
     sctx.putImageData(img, 0, 0);
+    const cell = d.var === 'wind' ? 64 : 24; // più risoluzione per frecce nitide
     const big = document.createElement('canvas');
-    big.width = d.nx * 24; big.height = d.ny * 24;
+    big.width = d.nx * cell; big.height = d.ny * cell;
     const bctx = big.getContext('2d');
     bctx.imageSmoothingEnabled = true; bctx.imageSmoothingQuality = 'high';
     bctx.drawImage(small, 0, 0, big.width, big.height);
+    if (d.var === 'wind') drawWindArrows(bctx, d, idx, cell);
     const out = { key, url: big.toDataURL('image/png'), bounds: d.bounds };
     this.renders.set(key, out);
     return out;
@@ -198,29 +255,33 @@ class ModelGrid {
   valueAt(lat, lon, ft) {
     const d = this.data;
     if (!d || !d.bounds.contains([lat, lon])) return null;
+    const cfg = VARS[d.var];
     const r = Math.floor((d.bounds.getNorth() - lat) / (d.bounds.getNorth() - d.bounds.getSouth()) * d.ny);
     const c = Math.floor((lon - d.bounds.getWest()) / (d.bounds.getEast() - d.bounds.getWest()) * d.nx);
-    const idx = Math.round((ft - d.t0) / HOUR) + 1;
-    return d.values[clamp(r, 0, d.ny - 1) * d.nx + clamp(c, 0, d.nx - 1)]?.[idx] ?? null;
+    const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
+    return d.values[cfg.params[0]][clamp(r, 0, d.ny - 1) * d.nx + clamp(c, 0, d.nx - 1)]?.[idx] ?? null;
   }
 }
 const modelGrid = new ModelGrid();
 
 const modelLegend = L.control({ position: 'bottomleft' });
+let legendVar = null;
 modelLegend.onAdd = () => {
-  const box = el('div', { class: 'legend' }, el('div', { class: 'muted small', text: 'Modello · mm/h' }));
-  for (const [mm, c] of PRECIP_STOPS) {
+  const cfg = VARS[legendVar];
+  const box = el('div', { class: 'legend' }, el('div', { class: 'muted small', text: cfg.legend }));
+  for (const [v, c] of cfg.stops) {
     const sw = el('i');
     sw.style.background = `rgba(${c[0]},${c[1]},${c[2]},${c[3] / 255})`;
-    box.append(el('span', {}, sw, String(mm)));
+    box.append(el('span', {}, sw, String(v)));
   }
   return box;
 };
-let legendShown = false;
 function showModelLegend(on) {
-  if (on === legendShown) return;
-  legendShown = on;
-  if (on) modelLegend.addTo(map); else modelLegend.remove();
+  const v = on ? prefs.layer : null;
+  if (v === legendVar) return;
+  if (legendVar) modelLegend.remove();
+  legendVar = v;
+  if (v) modelLegend.addTo(map);
 }
 
 // ------------------------------------------------------------------ stato
@@ -279,10 +340,14 @@ function scheduleUpdate() {
 async function update() {
   const token = ++updateToken;
   const c = map.getCenter();
-  const cands = candidatesAt(state.t, c.lat, c.lng);
+  // Vento e UV esistono solo come dato di modello.
+  const cands = prefs.layer === 'precip' ? candidatesAt(state.t, c.lat, c.lng) : [];
   state.cands = cands;
   let pick = null;
-  if (prefs.mode === 'auto') pick = cands[0] || null;
+  if (prefs.layer !== 'precip') {
+    const s = byId.openmeteo, f = s.frameAt(state.t);
+    pick = f ? { s, f, eff: rating.score(s.id) * s.qualityAt(state.t, f) } : null;
+  } else if (prefs.mode === 'auto') pick = cands[0] || null;
   else {
     const s = byId[prefs.mode];
     const f = s.frameAt(state.t);
@@ -341,6 +406,26 @@ function renderTimeLabel() {
   $('time-main').title = 'UTC: ' + isoZ(state.t);
   $('slider').value = String(Math.round((state.t - state.anchor) / MIN / SLIDER_STEP) * SLIDER_STEP);
   $('btn-live').classList.toggle('active', state.live);
+  const gi = $('goto-time');
+  if (document.activeElement !== gi) gi.value = toLocalInput(state.t);
+}
+
+const pad2 = n => String(n).padStart(2, '0');
+function toLocalInput(t) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function updateGotoRange() {
+  const [a, b] = tRange(), gi = $('goto-time');
+  gi.min = toLocalInput(a); gi.max = toLocalInput(b);
+}
+function gotoInputTime() {
+  const gi = $('goto-time');
+  const t = new Date(gi.value).getTime(); // "AAAA-MM-GGTHH:MM" senza fuso = ora locale
+  if (!gi.value || !Number.isFinite(t) || !gi.checkValidity()) { gi.reportValidity(); return; }
+  stopLoop(); play(false);
+  setTime(t);
+  gi.blur();
 }
 
 function renderSourceInfo() {
@@ -348,7 +433,7 @@ function renderSourceInfo() {
   box.replaceChildren();
   const p = state.pick;
   if (!p) {
-    box.append(el('span', { class: 'muted', text: prefs.mode === 'auto' ? 'Nessun dato disponibile' : `${byId[prefs.mode].short}: nessun dato in questo istante` }));
+    box.append(el('span', { class: 'muted', text: prefs.mode === 'auto' || prefs.layer !== 'precip' ? 'Nessun dato disponibile' : `${byId[prefs.mode].short}: nessun dato in questo istante` }));
     return;
   }
   const kindTxt = frameKindLabel(p.s, p.f);
@@ -361,13 +446,46 @@ function renderSourceInfo() {
   box.firstChild.style.background = p.s.color;
   const alts = state.cands.filter(c => c.s !== p.s).slice(0, 3).map(c => `${c.s.short} (${c.eff.toFixed(0)})`);
   if (alts.length) box.append(el('span', { class: 'muted alt', text: ' · alternative: ' + alts.join(', ') }));
+  renderConditions(box, p);
+}
+
+// Pioggia, vento e indice UV al centro della mappa (serie puntuale del modello).
+function renderConditions(box, p) {
   const c = map.getCenter();
-  const v = p.s.id === 'openmeteo' ? modelGrid.valueAt(c.lat, c.lng, p.f.time) : pointValueAt(state.t);
-  if (v != null && Number.isFinite(v)) box.append(el('span', { class: 'muted', text: ` · al centro (modello): ${v.toFixed(1)} mm/h` }));
+  const parts = [];
+  const rain = p.s.id === 'openmeteo' && prefs.layer === 'precip' ? modelGrid.valueAt(c.lat, c.lng, p.f.time) : pointValueAt(state.t, 'precipitation');
+  if (rain != null && Number.isFinite(rain)) parts.push(`pioggia ${rain.toFixed(1)} mm/h`);
+  const ws = pointValueAt(state.t, 'wind_speed_10m'), wd = pointValueAt(state.t, 'wind_direction_10m');
+  const wg = pointValueAt(state.t, 'wind_gusts_10m');
+  if (ws != null) parts.push(`vento ${Math.round(ws)} km/h${wd != null ? ' da ' + compass(wd) : ''}${wg != null ? `, raffiche ${Math.round(wg)}` : ''}`);
+  if (parts.length) box.append(el('span', { class: 'muted', text: ' · al centro (modello): ' + parts.join(' · ') }));
+  const uv = pointValueAt(state.t, 'uv_index');
+  if (uv == null) return;
+  const cat = uvCategory(uv), max = uvDayMax(state.t);
+  const maxTxt = max ? ` · max del giorno ${Math.round(max.v)} (${uvCategory(max.v).label}) alle ${fmtHM.format(max.t)}` : '';
+  const badge = el('span', { class: 'badge uv', text: `UV ${Math.round(uv)} ${cat.label}`, title: cat.advice + (max && max.v >= 3 ? ` Picco del giorno: ${uvCategory(max.v).advice}` : '') });
+  const col = UV_STOPS.findLast(st => Math.max(uv, 0.5) >= st[0])[1];
+  badge.style.background = `rgb(${col[0]},${col[1]},${col[2]})`;
+  badge.style.color = uv >= 8 || uv < 3 ? '#fff' : '#111';
+  box.append(badge, el('span', { class: 'muted', text: maxTxt }));
+}
+
+function uvDayMax(t) {
+  const ser = point?.series.uv_index;
+  if (!ser) return null;
+  const d0 = new Date(t); d0.setHours(0, 0, 0, 0);
+  const d1 = new Date(d0); d1.setDate(d1.getDate() + 1);
+  let best = null;
+  for (let i = 0; i < ser.length; i++) {
+    const ti = point.t0 + i * HOUR;
+    if (ti >= d0.getTime() && ti < d1.getTime() && Number.isFinite(ser[i]) && (!best || ser[i] > best.v)) best = { v: ser[i], t: ti };
+  }
+  return best;
 }
 
 // ------------------------------------------------------------------ serie puntuale + timeline
-let point = null; // { lat, lon, t0, values }
+const POINT_PARAMS = ['precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index'];
+let point = null; // { lat, lon, t0, series: { param: valori orari } }
 let pointTimer = null;
 function schedulePointFetch() {
   clearTimeout(pointTimer);
@@ -379,18 +497,25 @@ async function fetchPoint() {
   const lat = c.lat.toFixed(3), lon = (((c.lng + 540) % 360) - 180).toFixed(3);
   try {
     const { body } = await safeFetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      '&hourly=precipitation&past_days=15&forecast_days=16&timezone=GMT&models=best_match');
-    const times = body?.hourly?.time, vals = body?.hourly?.precipitation;
-    if (!Array.isArray(times) || !Array.isArray(vals)) throw new Error('dati mancanti');
-    point = { lat: c.lat, lon: c.lng, t0: Date.parse(times[0] + 'Z'), values: vals.map(v => (Number.isFinite(v) ? v : 0)) };
+      `&hourly=${POINT_PARAMS.join(',')}&past_days=15&forecast_days=16&timezone=GMT&models=best_match`);
+    const times = body?.hourly?.time;
+    if (!Array.isArray(times) || !Array.isArray(body.hourly.precipitation)) throw new Error('dati mancanti');
+    const series = {};
+    for (const p of POINT_PARAMS) {
+      const vals = Array.isArray(body.hourly[p]) ? body.hourly[p] : [];
+      series[p] = vals.map(v => (Number.isFinite(v) ? v : NaN));
+    }
+    point = { lat: c.lat, lon: c.lng, t0: Date.parse(times[0] + 'Z'), series };
   } catch { point = null; }
   drawTimeline();
   renderSourceInfo();
 }
-function pointValueAt(t) {
+// Precipitazione: somma dell'ora successiva a t; le altre variabili: valore istantaneo all'ora di t.
+function pointValueAt(t, param) {
   if (!point) return null;
-  const i = Math.round((floorTo(t, 60) - point.t0) / HOUR) + 1;
-  return point.values[i] ?? null;
+  const i = Math.round((floorTo(t, 60) - point.t0) / HOUR) + (param === 'precipitation' ? 1 : 0);
+  const v = point.series[param]?.[i];
+  return Number.isFinite(v) ? v : null;
 }
 
 const tlCanvas = $('timeline');
@@ -426,17 +551,17 @@ function drawTimeline() {
   }
   ctx.globalAlpha = 1;
 
-  // Precipitazione puntuale (modello) – barre orarie
+  // Variabile corrente al centro (modello) – barre orarie
   const barBase = h - 13, barMax = barBase - 26;
-  if (point) {
-    ctx.fillStyle = '#3b82f6';
-    for (let i = 1; i < point.values.length; i++) {
-      const v = point.values[i];
-      if (!(v > 0.05)) continue;
-      const t1 = point.t0 + (i - 1) * HOUR;
+  const cfg = VARS[prefs.layer], ser = point?.series[cfg.params[0]];
+  if (ser) {
+    for (let i = cfg.offset; i < ser.length; i++) {
+      const v = ser[i];
+      if (!(v > cfg.min)) continue;
+      const t1 = point.t0 + (i - cfg.offset) * HOUR;
       const x = xOf(t1, w), x2 = xOf(t1 + HOUR, w);
-      const hh = Math.min(1, Math.sqrt(v / 10)) * barMax;
-      const c = precipColor(Math.max(v, 0.1));
+      const hh = Math.max(1, cfg.bar(v) * barMax);
+      const c = cfg.color(Math.max(v, cfg.stops[0][0]));
       ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.9)`;
       ctx.fillRect(x, barBase - hh, Math.max(1, x2 - x), hh);
     }
@@ -447,6 +572,7 @@ function drawTimeline() {
   let row = 0;
   for (const s of SOURCES) {
     if (disabled.has(s.id) || coverageOf(s, c.lat, c.lng) === false) continue;
+    if (prefs.layer !== 'precip' && s.kind !== 'model') continue;
     const win = s.window();
     if (!win) continue;
     const y = 2 + row * 4;
@@ -471,11 +597,14 @@ function timelineLegend() {
   const c = map.getCenter();
   for (const s of SOURCES) {
     if (disabled.has(s.id) || coverageOf(s, c.lat, c.lng) === false || !s.window()) continue;
+    if (prefs.layer !== 'precip' && s.kind !== 'model') continue;
     const sw = el('i'); sw.style.background = s.color;
     box.append(el('span', {}, sw, s.short));
   }
+  const cfg = VARS[prefs.layer];
   const bar = el('i', { class: 'bars' });
-  box.append(el('span', {}, bar, 'pioggia al centro (modello)'));
+  bar.style.background = `linear-gradient(${cfg.stops.map(st => `rgb(${st[1].slice(0, 3)})`).reverse().join(', ')})`;
+  box.append(el('span', {}, bar, cfg.barLabel));
 }
 
 // ------------------------------------------------------------------ pannello rating
@@ -526,6 +655,7 @@ function setTime(t, { live = false } = {}) {
 }
 
 function latestObservation() {
+  if (prefs.layer !== 'precip') return Date.now();
   const c = map.getCenter();
   let best = null;
   for (const s of SOURCES) {
@@ -631,6 +761,12 @@ function bindUI() {
   $('btn-day-back').addEventListener('click', () => { stopLoop(); setTime(state.t - DAY); });
   $('btn-day-fwd').addEventListener('click', () => { stopLoop(); setTime(state.t + DAY); });
   $('speed').addEventListener('change', () => { if (state.playing) play(true); });
+  updateGotoRange();
+  $('btn-goto').addEventListener('click', gotoInputTime);
+  $('goto-time').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoInputTime(); }
+    if (e.key === 'Escape') { e.target.blur(); renderTimeLabel(); }
+  });
 
   const opacity = $('opacity');
   opacity.value = String(prefs.opacity);
@@ -641,6 +777,16 @@ function bindUI() {
   for (const s of SOURCES) mode.append(el('option', { value: s.id, text: s.short }));
   mode.value = prefs.mode;
   mode.addEventListener('change', () => { prefs.mode = mode.value; savePrefs(); scheduleUpdate(); });
+
+  const layer = $('layer');
+  layer.value = prefs.layer;
+  mode.disabled = prefs.layer !== 'precip';
+  layer.addEventListener('change', () => {
+    prefs.layer = layer.value; savePrefs();
+    mode.disabled = prefs.layer !== 'precip';
+    if (state.live) state.t = latestObservation();
+    timelineLegend(); drawTimeline(); scheduleUpdate();
+  });
 
   const base = $('basemap');
   base.value = prefs.basemap;
@@ -677,7 +823,7 @@ function bindUI() {
   });
 
   document.addEventListener('keydown', e => {
-    if (e.target.matches('input[type=search], input[type=text], select')) return;
+    if (e.target.matches('input[type=search], input[type=text], input[type=datetime-local], select')) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? setTime(state.t - HOUR) : step(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); e.shiftKey ? setTime(state.t + HOUR) : step(1); }
     else if (e.key === ' ' && !e.target.matches('button')) { e.preventDefault(); play(!state.playing); }
@@ -699,6 +845,7 @@ window.addEventListener('error', e => setMapNote('Errore: ' + e.message));
 window.addEventListener('unhandledrejection', e => setMapNote('Errore: ' + (e.reason?.message || e.reason)));
 function reanchor() {
   state.anchor = floorTo(Date.now(), SLIDER_STEP);
+  updateGotoRange();
   if (state.live) state.t = latestObservation();
   scheduleUpdate();
 }
