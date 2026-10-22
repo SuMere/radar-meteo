@@ -20,7 +20,7 @@ const prefs = (() => {
     place: typeof p.place === 'string' ? p.place.slice(0, 120) : 'Torino, Piemonte, Italia',
     opacity: clamp(num(p.opacity, 0.8), 0.1, 1),
     basemap: ['dark', 'osm'].includes(p.basemap) ? p.basemap : 'light',
-    layer: ['wind', 'uv'].includes(p.layer) ? p.layer : 'precip',
+    layer: ['wind', 'uv', 'temp'].includes(p.layer) ? p.layer : 'precip',
     mode: typeof p.mode === 'string' && (p.mode === 'auto' || byId[p.mode]) ? p.mode : 'auto',
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
   };
@@ -61,7 +61,10 @@ const placeMarker = L.circleMarker([prefs.lat, prefs.lon], {
 // Mantiene alcuni layer pre-caricati (opacità 0) per animazioni fluide e
 // mostra il nuovo frame solo quando le tile sono pronte, evitando sfarfallii.
 class FrameManager {
-  constructor(max = 8) { this.cache = new Map(); this.current = null; this.max = max; this.opacity = prefs.opacity; }
+  // Ogni layer in cache resta sulla mappa e scarica tile a ogni spostamento: da fermi se ne
+  // tengono pochi (corrente, precedente, successivo), di più solo durante l'animazione.
+  constructor(max = 3) { this.cache = new Map(); this.current = null; this.max = max; this.opacity = prefs.opacity; }
+  setMax(n) { this.max = n; this._evict(); }
   _get(key, factory) {
     let e = this.cache.get(key);
     if (e) { this.cache.delete(key); this.cache.set(key, e); return e; }
@@ -126,6 +129,12 @@ const WIND_STOPS = [
 const UV_STOPS = [
   [0.5, [41, 149, 0, 150]], [3, [247, 228, 0, 180]], [6, [248, 89, 0, 200]], [8, [216, 0, 29, 215]], [11, [107, 73, 200, 225]],
 ];
+// Temperatura a 2 m in °C (rampa continua).
+const TEMP_STOPS = [
+  [-20, [91, 33, 182, 185]], [-10, [59, 76, 192, 180]], [0, [70, 150, 220, 170]], [5, [90, 190, 210, 165]],
+  [10, [100, 195, 130, 165]], [15, [180, 215, 90, 170]], [20, [250, 210, 70, 175]], [25, [248, 150, 50, 185]],
+  [30, [230, 80, 50, 195]], [35, [190, 30, 50, 205]], [40, [120, 10, 40, 215]],
+];
 const stepColor = stops => v => {
   if (!(v >= stops[0][0])) return [0, 0, 0, 0];
   for (let i = stops.length - 1; i >= 0; i--) if (v >= stops[i][0]) return stops[i][1];
@@ -154,7 +163,34 @@ const VARS = {
     bar: v => Math.min(1, Math.sqrt(v / 60)), legend: 'Modello · vento a 10 m, km/h', barLabel: 'vento al centro (modello)' },
   uv: { params: ['uv_index'], offset: 0, stops: UV_STOPS, color: stepColor(UV_STOPS), min: 0.05,
     bar: v => Math.min(1, v / 11), legend: 'Modello · indice UV', barLabel: 'indice UV al centro (modello)' },
+  temp: { params: ['temperature_2m'], offset: 0, stops: TEMP_STOPS, color: rampColor(TEMP_STOPS), min: -Infinity,
+    bar: v => clamp((v + 20) / 60, 0.02, 1), legend: 'Modello · temperatura a 2 m, °C', barLabel: 'temperatura al centro (modello)' },
 };
+
+// La griglia è regolare in proiezione Mercatore (come la mappa), così l'immagine
+// sovrapposta non si deforma e resta allineata anche a zoom bassi.
+const MAX_LAT = 84;
+const mercY = lat => Math.log(Math.tan(Math.PI / 4 + clamp(lat, -89, 89) * Math.PI / 360));
+const latOfY = y => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
+const mod360 = x => ((x % 360) + 360) % 360;
+// Posizione frazionaria tra i centri delle celle (NaN fuori dalla griglia).
+function rowPos(d, lat) {
+  const f = (d.yN - mercY(lat)) / (d.yN - d.yS) * d.ny;
+  return f < 0 || f > d.ny ? NaN : clamp(f - 0.5, 0, d.ny - 1);
+}
+function colPos(d, lon) {
+  const f = mod360(lon - d.w) / (d.e - d.w) * d.nx;
+  if (d.wrap) return f - 0.5; // griglia su tutto il globo: le colonne si richiudono
+  return f > d.nx ? NaN : clamp(f - 0.5, 0, d.nx - 1);
+}
+function bilinear(d, a, r, c) {
+  const r0 = Math.floor(r), r1 = Math.min(r0 + 1, d.ny - 1), fy = r - r0;
+  let c0 = Math.floor(c), c1 = c0 + 1;
+  const fx = c - c0;
+  if (d.wrap) { c0 = (c0 + d.nx) % d.nx; c1 %= d.nx; } else c1 = Math.min(c1, d.nx - 1);
+  const o0 = r0 * d.nx, o1 = r1 * d.nx;
+  return (a[o0 + c0] * (1 - fx) + a[o0 + c1] * fx) * (1 - fy) + (a[o1 + c0] * (1 - fx) + a[o1 + c1] * fx) * fy;
+}
 
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO'];
 const compass = deg => COMPASS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
@@ -168,24 +204,39 @@ function uvCategory(v) {
 }
 
 // Frecce del vento (direzione verso cui soffia) al centro di ogni cella della griglia.
-function drawWindArrows(ctx, d, idx, cell) {
-  const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+function drawWindArrows(ctx, d, idx, cell, ox = 0) {
+  const sp = gridSlice(d, 'wind_speed_10m', idx), dir = gridSlice(d, 'wind_direction_10m', idx);
+  const k = cell / 24, white = new Path2D(), dark = new Path2D();
   for (let r = 0; r < d.ny; r++) for (let c = 0; c < d.nx; c++) {
-    const i = r * d.nx + c, s = sp[i][idx], a = dir[i][idx];
+    const i = r * d.nx + c, s = sp[i], a = dir[i];
     if (!Number.isFinite(s) || !Number.isFinite(a) || s < 1) continue;
     const b = (a + 180) * Math.PI / 180, dx = Math.sin(b), dy = -Math.cos(b);
-    const k = cell / 24, len = (4 + Math.min(1, s / 60) * 6) * k, cx = (c + 0.5) * cell, cy = (r + 0.5) * cell;
+    const len = (4 + Math.min(1, s / 60) * 6) * k, cx = ox + (c + 0.5) * cell, cy = (r + 0.5) * cell;
     const hx = cx + dx * len, hy = cy + dy * len;
-    const path = new Path2D();
-    path.moveTo(cx - dx * len, cy - dy * len); path.lineTo(hx, hy);
-    for (const rot of [0.5, -0.5]) {
-      const bx = -dx * Math.cos(rot) + dy * Math.sin(rot), by = -dx * Math.sin(rot) - dy * Math.cos(rot);
-      path.moveTo(hx, hy); path.lineTo(hx + bx * 4 * k, hy + by * 4 * k);
+    for (const path of [white, dark]) {
+      path.moveTo(cx - dx * len, cy - dy * len); path.lineTo(hx, hy);
+      for (const rot of [0.5, -0.5]) {
+        const bx = -dx * Math.cos(rot) + dy * Math.sin(rot), by = -dx * Math.sin(rot) - dy * Math.cos(rot);
+        path.moveTo(hx, hy); path.lineTo(hx + bx * 4 * k, hy + by * 4 * k);
+      }
     }
-    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 3 * k; ctx.stroke(path);
-    ctx.strokeStyle = 'rgba(15,23,42,0.9)'; ctx.lineWidth = 1.4 * k; ctx.stroke(path);
   }
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 3 * k; ctx.stroke(white);
+  ctx.strokeStyle = 'rgba(15,23,42,0.9)'; ctx.lineWidth = 1.4 * k; ctx.stroke(dark);
+}
+
+// Valori di una variabile per un'ora su tutta la griglia (calcolati una volta e riusati).
+function gridSlice(d, param, idx) {
+  const key = param + ':' + idx;
+  let a = d.slices.get(key);
+  if (!a) {
+    const src = d.values[param], n = d.nx * d.ny;
+    a = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const v = src[i][idx]; a[i] = Number.isFinite(v) ? v : NaN; }
+    d.slices.set(key, a);
+  }
+  return a;
 }
 
 // Open-Meteo conta ogni punto della griglia come una chiamata (limite gratuito: 600/min,
@@ -225,8 +276,14 @@ async function omFetch(url, opts) {
 class ModelGrid {
   constructor() { this.data = null; this.cache = []; this.pending = null; this.renders = new Map(); this.seq = 0; }
   // Una griglia va bene se copre la vista, l'ora richiesta e non è troppo grossolana per lo zoom.
+  // Le latitudini oltre ±MAX_LAT (visibili a zoom bassi) non sono mai coperte: si ignorano,
+  // altrimenti ogni aggiornamento richiederebbe una nuova griglia.
   _fits(d, b, z, t) {
-    return d && d.bounds.contains(b) && z - d.zoom <= 2 && t >= d.t0 && t + HOUR <= d.t0 + (d.len - 1) * HOUR;
+    if (!d || z - d.zoom > 2 || t < d.t0 || t + HOUR > d.t0 + (d.len - 1) * HOUR) return false;
+    if (Math.max(-MAX_LAT, b.getSouth()) < d.s || Math.min(MAX_LAT, b.getNorth()) > d.n) return false;
+    if (d.wrap) return true;
+    const width = b.getEast() - b.getWest();
+    return mod360(b.getWest() - d.w) + width <= d.e - d.w;
   }
   _find(b, z, t) {
     const d = this.cache.find(g => this._fits(g, b, z, t));
@@ -245,17 +302,17 @@ class ModelGrid {
     try { return await this.pending; } finally { this.pending = null; }
   }
   async _fetch(pb, z, t) {
-    const s = Math.max(-84, pb.getSouth()), n = Math.min(84, pb.getNorth());
+    const s = Math.max(-MAX_LAT, pb.getSouth()), n = Math.min(MAX_LAT, pb.getNorth());
     let w = pb.getWest(), e = pb.getEast();
-    if (e - w > 360) { w = -180; e = 180; }
-    const size = map.getSize(), aspect = clamp(size.x / Math.max(1, size.y), 0.4, 3);
+    const wrap = e - w >= 300; // vista quasi globale: si prende tutto il globo
+    if (wrap) { w = -180; e = 180; }
+    const yN = mercY(n), yS = mercY(s);
+    const aspect = clamp((e - w) * Math.PI / 180 / (yN - yS), 0.4, 3);
     const ny = clamp(Math.round(Math.sqrt(GRID_POINTS / aspect)), 4, 14), nx = clamp(Math.floor(GRID_POINTS / ny), 4, 18);
     const lats = [], lons = [];
     for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) {
-      lats.push((n - (r + 0.5) * (n - s) / ny).toFixed(3));
-      let lon = w + (c + 0.5) * (e - w) / nx;
-      lon = ((lon + 540) % 360) - 180;
-      lons.push(lon.toFixed(3));
+      lats.push(latOfY(yN - (r + 0.5) * (yN - yS) / ny).toFixed(3));
+      lons.push((mod360(w + (c + 0.5) * (e - w) / nx + 180) - 180).toFixed(3));
     }
     const h0 = floorTo(t, 60) - 2 * DAY, h1 = floorTo(t, 60) + 4 * DAY; // < 2 settimane: 1 chiamata per punto
     const hh = x => isoZ(x).slice(0, 16);
@@ -268,8 +325,8 @@ class ModelGrid {
     if (!Array.isArray(times) || !times.length) throw new Error('Griglia senza dati');
     const t0 = Date.parse(times[0] + 'Z');
     const values = {};
-    for (const p of GRID_PARAMS) values[p] = arr.map(pt => (pt.hourly?.[p] || []).map(x => (Number.isFinite(x) ? x : NaN)));
-    this.data = { id: ++this.seq, bounds: L.latLngBounds([s, w], [n, e]), zoom: z, nx, ny, t0, len: times.length, values };
+    for (const p of GRID_PARAMS) values[p] = arr.map(pt => pt.hourly?.[p] || []);
+    this.data = { id: ++this.seq, s, n, w, e, yN, yS, wrap, zoom: z, nx, ny, t0, len: times.length, values, slices: new Map() };
     this.cache = [this.data, ...this.cache].slice(0, 4);
     if (this.renders.size > 150) this.renders.clear();
     return this.data;
@@ -279,50 +336,58 @@ class ModelGrid {
     const d = this.data, v = prefs.layer, cfg = VARS[v];
     const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
     if (idx < 0 || idx >= d.len) return null;
-    const key = `om:${d.id}:${v}:${idx}`;
-    if (this.renders.has(key)) return this.renders.get(key);
-    const main = d.values[cfg.params[0]];
-    const small = document.createElement('canvas');
-    small.width = d.nx; small.height = d.ny;
-    const sctx = small.getContext('2d');
-    const img = sctx.createImageData(d.nx, d.ny);
-    for (let i = 0; i < d.nx * d.ny; i++) img.data.set(cfg.color(main[i][idx]), i * 4);
-    sctx.putImageData(img, 0, 0);
     const arrows = v === 'wind' && !fieldAnim.enabled; // frecce statiche solo con "riduci movimento"
+    const key = `om:${d.id}:${v}:${idx}:${arrows ? 'a' : ''}`;
+    if (this.renders.has(key)) return this.renders.get(key);
+    const main = gridSlice(d, cfg.params[0], idx);
+    // Griglia globale: tre copie affiancate, così la mappa resta coperta anche oltre ±180°.
+    const copies = d.wrap ? 3 : 1, sw = d.nx * copies;
+    const small = document.createElement('canvas');
+    small.width = sw; small.height = d.ny;
+    const sctx = small.getContext('2d');
+    const img = sctx.createImageData(sw, d.ny);
+    for (let r = 0; r < d.ny; r++) for (let c = 0; c < d.nx; c++) {
+      const col = cfg.color(main[r * d.nx + c]);
+      for (let k = 0; k < copies; k++) img.data.set(col, (r * sw + k * d.nx + c) * 4);
+    }
+    sctx.putImageData(img, 0, 0);
     const cell = arrows ? 64 : 24; // più risoluzione per frecce nitide
     const big = document.createElement('canvas');
-    big.width = d.nx * cell; big.height = d.ny * cell;
+    big.width = sw * cell; big.height = d.ny * cell;
     const bctx = big.getContext('2d');
     bctx.imageSmoothingEnabled = true; bctx.imageSmoothingQuality = 'high';
     bctx.drawImage(small, 0, 0, big.width, big.height);
-    if (arrows) drawWindArrows(bctx, d, idx, cell);
-    const out = { key, idx, url: big.toDataURL('image/png'), bounds: d.bounds };
+    if (arrows) for (let k = 0; k < copies; k++) drawWindArrows(bctx, d, idx, cell, k * d.nx * cell);
+    const off = d.wrap ? 360 : 0;
+    const out = { key, idx, url: big.toDataURL('image/png'), bounds: L.latLngBounds([d.s, d.w - off], [d.n, d.e + off]) };
     this.renders.set(key, out);
     return out;
   }
   valueAt(lat, lon, ft) {
     const d = this.data;
-    if (!d || !d.bounds.contains([lat, lon])) return null;
-    const cfg = VARS[prefs.layer];
-    const r = Math.floor((d.bounds.getNorth() - lat) / (d.bounds.getNorth() - d.bounds.getSouth()) * d.ny);
-    const c = Math.floor((lon - d.bounds.getWest()) / (d.bounds.getEast() - d.bounds.getWest()) * d.nx);
-    const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
-    return d.values[cfg.params[0]][clamp(r, 0, d.ny - 1) * d.nx + clamp(c, 0, d.nx - 1)]?.[idx] ?? null;
+    if (!d) return null;
+    const r = rowPos(d, lat), c = colPos(d, lon);
+    const idx = Math.round((ft - d.t0) / HOUR) + VARS[prefs.layer].offset;
+    if (!Number.isFinite(r) || !Number.isFinite(c) || idx < 0 || idx >= d.len) return null;
+    const v = bilinear(d, gridSlice(d, VARS[prefs.layer].params[0], idx), r, c);
+    return Number.isFinite(v) ? v : null;
   }
 }
 const modelGrid = new ModelGrid();
 
-// ------------------------------------------------------------------ vento e UV animati
+// ------------------------------------------------------------------ vento, UV e temperatura sopra la mappa
 // Vento: particelle trasportate dal campo del modello, con scie che sfumano.
 // UV: bagliori che compaiono, salgono piano e svaniscono; densità e dimensione
 // crescono con l'indice UV (nessuno di notte).
-// Il campo (vento: u, v in km/h; UV: indice) è interpolato bilinearmente dalla griglia
-// su una maglia di pixel dello schermo, ricostruita a ogni spostamento o cambio d'ora.
+// Temperatura: valori in °C su una maglia fissa rispetto alla mappa (nessuna animazione).
+// Il campo (vento: u, v in km/h; UV e temperatura: valore) è interpolato bilinearmente dalla
+// griglia su una maglia di pixel dello schermo, ricostruita a ogni spostamento o cambio d'ora.
 const FIELD_STEP = 8;    // px tra i nodi della maglia
 // Velocità visiva (px per frame a 60 Hz) non lineare: anche il vento debole scorre
 // in modo percepibile (5 km/h ≈ 35 px/s, 20 km/h ≈ 85 px/s, 100 km/h ≈ 220 px/s).
 const windPx = kmh => 0.22 * Math.pow(kmh, 0.62);
-const ANIMATED = new Set(['wind', 'uv']);
+const FIELD_LAYERS = new Set(['wind', 'uv', 'temp']);
+const TEMP_LABEL = { dx: 96, dy: 64 }; // passo delle etichette di temperatura (px)
 function glowSprite() {
   const c = document.createElement('canvas');
   c.width = c.height = 32;
@@ -340,6 +405,7 @@ class FieldAnimation {
     map.getContainer().append(this.canvas);
     this.ctx = this.canvas.getContext('2d');
     this.src = null; this.field = null; this.particles = []; this.raf = 0; this.moving = false;
+    this.au = 0; this.av = 0; // ultimo valore letto da _at (evita un'allocazione per particella)
     this.reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
     this.buckets = [[], [], [], []];
     this.sprite = glowSprite();
@@ -350,22 +416,17 @@ class FieldAnimation {
   get enabled() { return !this.reduced.matches; }
   setOpacity(o) { this.canvas.style.opacity = String(0.4 + 0.6 * o); }
   setSource(d, idx, mode) {
-    if (!this.enabled) return this.stop();
+    if (mode !== 'temp' && !this.enabled) return this.stop(); // le etichette non si muovono: restano
     if (this.src?.d === d && this.src.idx === idx && this.src.mode === mode) return;
     const n = d.nx * d.ny, u = new Float32Array(n), v = new Float32Array(n);
     if (mode === 'wind') {
       // u, v per cella: componenti verso cui soffia (x = est, y = sud sullo schermo).
-      const sp = d.values.wind_speed_10m, dir = d.values.wind_direction_10m;
+      const sp = gridSlice(d, 'wind_speed_10m', idx), dir = gridSlice(d, 'wind_direction_10m', idx);
       for (let i = 0; i < n; i++) {
-        const s = sp[i][idx], a = dir[i][idx];
-        if (!Number.isFinite(s) || !Number.isFinite(a)) { u[i] = v[i] = NaN; continue; }
-        const b = (a + 180) * Math.PI / 180;
-        u[i] = s * Math.sin(b); v[i] = -s * Math.cos(b);
+        const b = (dir[i] + 180) * Math.PI / 180; // NaN si propaga
+        u[i] = sp[i] * Math.sin(b); v[i] = -sp[i] * Math.cos(b);
       }
-    } else {
-      const uv = d.values.uv_index;
-      for (let i = 0; i < n; i++) u[i] = Number.isFinite(uv[i][idx]) ? uv[i][idx] : NaN;
-    }
+    } else u.set(gridSlice(d, mode === 'uv' ? 'uv_index' : 'temperature_2m', idx));
     if (this.src && this.src.mode !== mode) this._pause();
     this.src = { d, idx, mode, u, v };
     this._rebuild();
@@ -382,49 +443,64 @@ class FieldAnimation {
     this.canvas.hidden = true;
     this.particles = [];
   }
-  // Campo della griglia (bilineare tra i centri delle celle) in un punto geografico.
-  _sample(lat, lon) {
-    const { d, u, v } = this.src, b = d.bounds;
-    const fr = (b.getNorth() - lat) / (b.getNorth() - b.getSouth()) * d.ny - 0.5;
-    const fc = (lon - b.getWest()) / (b.getEast() - b.getWest()) * d.nx - 0.5;
-    if (fr < -0.5 || fr > d.ny - 0.5 || fc < -0.5 || fc > d.nx - 0.5) return null;
-    const r = clamp(fr, 0, d.ny - 1), c = clamp(fc, 0, d.nx - 1);
-    const r0 = Math.floor(r), c0 = Math.floor(c), r1 = Math.min(r0 + 1, d.ny - 1), c1 = Math.min(c0 + 1, d.nx - 1);
-    const fy = r - r0, fx = c - c0;
-    const i00 = r0 * d.nx + c0, i01 = r0 * d.nx + c1, i10 = r1 * d.nx + c0, i11 = r1 * d.nx + c1;
-    const mix = a => (a[i00] * (1 - fx) + a[i01] * fx) * (1 - fy) + (a[i10] * (1 - fx) + a[i11] * fx) * fy;
-    const uu = mix(u), vv = mix(v);
-    return Number.isFinite(uu) && Number.isFinite(vv) ? [uu, vv] : null;
-  }
   _rebuild() {
     if (!this.src || this.moving) return;
-    const size = map.getSize(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const size = map.getSize(), mode = this.src.mode;
     if (!size.x || !size.y) return;
+    // Le scie non hanno bisogno della piena risoluzione retina: meno pixel da sfumare a ogni frame.
+    const dpr = Math.min(mode === 'temp' ? 2 : 1.5, window.devicePixelRatio || 1);
     this.w = size.x; this.h = size.y; this.dpr = dpr;
     const cw = Math.round(size.x * dpr), ch = Math.round(size.y * dpr);
     if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
+    // In Mercatore la latitudine dipende solo da y e la longitudine solo da x:
+    // basta proiettare una riga e una colonna invece di ogni nodo.
+    const { d, u, v } = this.src;
     const cols = Math.ceil(size.x / FIELD_STEP) + 1, rows = Math.ceil(size.y / FIELD_STEP) + 1;
+    const rp = new Float64Array(rows), cp = new Float64Array(cols);
+    for (let y = 0; y < rows; y++) rp[y] = rowPos(d, map.containerPointToLatLng([0, y * FIELD_STEP]).lat);
+    for (let x = 0; x < cols; x++) cp[x] = colPos(d, map.containerPointToLatLng([x * FIELD_STEP, 0]).lng);
     const fu = new Float32Array(cols * rows), fv = new Float32Array(cols * rows);
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
-      const ll = map.containerPointToLatLng([x * FIELD_STEP, y * FIELD_STEP]);
-      const s = this._sample(ll.lat, ll.lng), i = y * cols + x;
-      fu[i] = s ? s[0] : NaN; fv[i] = s ? s[1] : NaN;
+      const i = y * cols + x;
+      if (Number.isNaN(rp[y]) || Number.isNaN(cp[x])) { fu[i] = fv[i] = NaN; continue; }
+      fu[i] = bilinear(d, u, rp[y], cp[x]); fv[i] = bilinear(d, v, rp[y], cp[x]);
     }
     this.field = { cols, rows, fu, fv };
-    const uv = this.src.mode === 'uv';
+    this.canvas.hidden = false;
+    if (mode === 'temp') { cancelAnimationFrame(this.raf); this.raf = 0; this.particles = []; return this._drawLabels(); }
+    const uv = mode === 'uv';
     const target = Math.round(clamp(size.x * size.y / (uv ? 900 : 450), uv ? 120 : 200, uv ? 1500 : 3500));
     if (this.particles.length > target) this.particles.length = target;
     while (this.particles.length < target) this.particles.push(this._spawn({}, true));
-    this.canvas.hidden = false;
     if (!this.raf) this.raf = requestAnimationFrame(this._tick);
+  }
+  // Etichette ancorate alla mappa (maglia in pixel assoluti, sfalsata a righe alterne):
+  // durante lo spostamento restano sugli stessi luoghi.
+  _drawLabels() {
+    const ctx = this.ctx, { w, h } = this, { dx, dy } = TEMP_LABEL;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(15,23,42,0.75)'; ctx.fillStyle = '#fff';
+    const o = map.containerPointToLayerPoint([0, 0]).add(map.getPixelOrigin());
+    for (let gy = Math.ceil(o.y / dy); gy * dy - o.y < h; gy++) {
+      const y = gy * dy - o.y, shift = (gy & 1) * dx / 2;
+      for (let gx = Math.ceil((o.x - shift) / dx); gx * dx + shift - o.x < w; gx++) {
+        const x = gx * dx + shift - o.x;
+        if (Math.abs(x - w / 2) < 24 && Math.abs(y - h / 2) < 16) continue; // lascia libero il mirino
+        if (!this._at(x, y)) continue;
+        const txt = `${Math.round(this.au)}°`;
+        ctx.strokeText(txt, x, y); ctx.fillText(txt, x, y);
+      }
+    }
   }
   _spawn(p, initial = false) {
     p.x = Math.random() * this.w; p.y = Math.random() * this.h;
     if (this.src?.mode === 'uv') {
       // Accettazione proporzionale all'indice UV: più bagliori dove il sole è più forte.
       for (let k = 0; k < 4; k++) {
-        const f = this.field && this._at(p.x, p.y);
-        if (f && f[0] >= 0.5 && Math.random() * 9 < f[0]) break;
+        if (this.field && this._at(p.x, p.y) && this.au >= 0.5 && Math.random() * 9 < this.au) break;
         p.x = Math.random() * this.w; p.y = Math.random() * this.h;
       }
       p.max = 70 + Math.random() * 90; p.ph = Math.random() * 100;
@@ -432,14 +508,17 @@ class FieldAnimation {
     p.age = initial ? Math.random() * p.max : 0;
     return p;
   }
+  // Campo in un punto dello schermo: risultato in this.au / this.av.
   _at(x, y) {
     const f = this.field, gx = x / FIELD_STEP, gy = y / FIELD_STEP;
     const x0 = Math.floor(gx), y0 = Math.floor(gy);
-    if (x0 < 0 || y0 < 0 || x0 >= f.cols - 1 || y0 >= f.rows - 1) return null;
-    const fx = gx - x0, fy = gy - y0, i = y0 * f.cols + x0;
-    const mix = a => (a[i] * (1 - fx) + a[i + 1] * fx) * (1 - fy) + (a[i + f.cols] * (1 - fx) + a[i + f.cols + 1] * fx) * fy;
-    const u = mix(f.fu), v = mix(f.fv);
-    return Number.isFinite(u) && Number.isFinite(v) ? [u, v] : null;
+    if (x0 < 0 || y0 < 0 || x0 >= f.cols - 1 || y0 >= f.rows - 1) return false;
+    const fx = gx - x0, fy = gy - y0, i = y0 * f.cols + x0, j = i + f.cols;
+    const a = f.fu, b = f.fv;
+    const u = (a[i] * (1 - fx) + a[i + 1] * fx) * (1 - fy) + (a[j] * (1 - fx) + a[j + 1] * fx) * fy;
+    const v = (b[i] * (1 - fx) + b[i + 1] * fx) * (1 - fy) + (b[j] * (1 - fx) + b[j + 1] * fx) * fy;
+    this.au = u; this.av = v;
+    return u === u && v === v; // falso se NaN
   }
   _tick = () => {
     this.raf = requestAnimationFrame(this._tick);
@@ -458,10 +537,9 @@ class FieldAnimation {
     const B = this.buckets;
     for (const b of B) b.length = 0;
     for (const p of this.particles) {
-      const vel = (p.age += dt) < p.max ? this._at(p.x, p.y) : null;
-      if (!vel) { this._spawn(p); continue; }
-      const s = Math.hypot(vel[0], vel[1]), k = s > 0 ? windPx(s) / s * dt : 0;
-      const nx = p.x + vel[0] * k, ny = p.y + vel[1] * k;
+      if ((p.age += dt) >= p.max || !this._at(p.x, p.y)) { this._spawn(p); continue; }
+      const vu = this.au, vv = this.av, s = Math.hypot(vu, vv), k = s > 0 ? windPx(s) / s * dt : 0;
+      const nx = p.x + vu * k, ny = p.y + vv * k;
       B[s < 10 ? 0 : s < 25 ? 1 : s < 45 ? 2 : 3].push(p.x, p.y, nx, ny);
       p.x = nx; p.y = ny;
     }
@@ -483,9 +561,8 @@ class FieldAnimation {
     ctx.clearRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'lighter';
     for (const p of this.particles) {
-      const f = (p.age += dt) < p.max ? this._at(p.x, p.y) : null;
-      if (!f || f[0] < 0.5) { this._spawn(p); continue; }
-      const uv = f[0];
+      if ((p.age += dt) >= p.max || !this._at(p.x, p.y) || this.au < 0.5) { this._spawn(p); continue; }
+      const uv = this.au;
       p.y -= 0.12 * dt; p.x += Math.sin((p.age + p.ph) / 25) * 0.12 * dt;
       const a = Math.sin(Math.PI * p.age / p.max) * Math.min(1, 0.3 + uv / 10);
       const r = 3 + Math.min(1, uv / 11) * 5;
@@ -579,7 +656,7 @@ function scheduleUpdate() {
 
 async function update() {
   const token = ++updateToken;
-  if (!ANIMATED.has(prefs.layer)) fieldAnim.stop();
+  if (!FIELD_LAYERS.has(prefs.layer)) fieldAnim.stop();
   const c = map.getCenter();
   // Vento e UV esistono solo come dato di modello.
   const cands = prefs.layer === 'precip' ? candidatesAt(state.t, c.lat, c.lng) : [];
@@ -615,7 +692,7 @@ async function update() {
     frames.show(r.key, () => L.imageOverlay(r.url, r.bounds, {
       pane: 'radar', interactive: false, attribution: pick.s.attribution, className: 'model-overlay',
     }));
-    if (ANIMATED.has(prefs.layer)) fieldAnim.setSource(modelGrid.data, r.idx, prefs.layer);
+    if (FIELD_LAYERS.has(prefs.layer)) fieldAnim.setSource(modelGrid.data, r.idx, prefs.layer);
     setMapNote(null);
     renderSourceInfo();
   } else {
@@ -691,10 +768,12 @@ function renderSourceInfo() {
   renderConditions(box, p);
 }
 
-// Pioggia, vento e indice UV al centro della mappa (serie puntuale del modello).
+// Temperatura, pioggia, vento e indice UV al centro della mappa (serie puntuale del modello).
 function renderConditions(box, p) {
   const c = map.getCenter();
   const parts = [];
+  const temp = pointValueAt(state.t, 'temperature_2m');
+  if (temp != null) parts.push(`${Math.round(temp)} °C`);
   const rain = p.s.id === 'openmeteo' && prefs.layer === 'precip' ? modelGrid.valueAt(c.lat, c.lng, p.f.time) : pointValueAt(state.t, 'precipitation');
   if (rain != null && Number.isFinite(rain)) parts.push(`pioggia ${rain.toFixed(1)} mm/h`);
   const ws = pointValueAt(state.t, 'wind_speed_10m'), wd = pointValueAt(state.t, 'wind_direction_10m');
@@ -728,7 +807,7 @@ function uvDayMax(t) {
 }
 
 // ------------------------------------------------------------------ serie puntuale + timeline
-const POINT_PARAMS = ['precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index'];
+const POINT_PARAMS = ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index'];
 let point = null; // { lat, lon, t0, series: { param: valori orari } }
 let pointTimer = null;
 function schedulePointFetch() {
@@ -929,6 +1008,7 @@ function play(on) {
   $('btn-play').textContent = on ? '❚❚' : '▶';
   $('btn-play').title = on ? 'Pausa (spazio)' : 'Riproduci (spazio)';
   clearInterval(playTimer);
+  frames.setMax(on ? 8 : 3);
   if (!on) return;
   const tick = () => {
     const st = state.pick ? state.pick.s.stepMin : 10;

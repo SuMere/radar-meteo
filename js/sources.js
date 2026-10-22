@@ -17,7 +17,7 @@ function wmsLayer(url, layerName, t, attribution) {
   return L.tileLayer.wms(url, {
     layers: layerName, styles: '', format: 'image/png', transparent: true,
     version: '1.3.0', time: isoZ(t, true), maxZoom: 19, attribution,
-    pane: 'radar',
+    pane: 'radar', updateWhenZooming: false, keepBuffer: 1,
   });
 }
 
@@ -76,7 +76,7 @@ const rainviewer = {
   qualityAt: () => 1,
   layer(frame) {
     return L.tileLayer(`https://tilecache.rainviewer.com${frame.path}/256/{z}/{x}/{y}/2/1_1.png`, {
-      maxNativeZoom: 7, maxZoom: 19, attribution: this.attribution, pane: 'radar',
+      maxNativeZoom: 7, maxZoom: 19, attribution: this.attribution, pane: 'radar', updateWhenZooming: false, keepBuffer: 1,
     });
   },
   // La mappa di copertura RainViewer: pixel opaco = zona NON coperta dai radar.
@@ -168,7 +168,7 @@ const nexrad = {
   qualityAt: () => 1,
   layer(frame) {
     return L.tileLayer(`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-${compactUTC(frame.time)}/{z}/{x}/{y}.png`, {
-      maxNativeZoom: 12, maxZoom: 19, attribution: this.attribution, pane: 'radar',
+      maxNativeZoom: 12, maxZoom: 19, attribution: this.attribution, pane: 'radar', updateWhenZooming: false, keepBuffer: 1,
     });
   },
 };
@@ -232,7 +232,7 @@ const imerg = {
   qualityAt: () => 1,
   layer(frame) {
     return L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${IMERG}/default/${isoZ(frame.time)}/GoogleMapsCompatible_Level6/{z}/{y}/{x}.png`, {
-      maxNativeZoom: 6, maxZoom: 19, attribution: this.attribution, pane: 'radar',
+      maxNativeZoom: 6, maxZoom: 19, attribution: this.attribution, pane: 'radar', updateWhenZooming: false, keepBuffer: 1,
     });
   },
 };

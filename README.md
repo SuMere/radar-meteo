@@ -71,13 +71,13 @@ previsioni lontane sono penalizzati. Il pannello **★ Fonti** mostra i rating,
 lo storico delle sonde e permette di escludere fonti; il menu **Fonte** forza
 una fonte specifica.
 
-## Vento e UV
+## Vento, UV e temperatura
 
 Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore e particelle
-animate che seguono il flusso; frecce statiche se il sistema chiede di ridurre le animazioni) o **indice UV** (scala colori OMS, con bagliori animati più fitti e grandi dove l'UV è più alto). Questi dati
+animate che seguono il flusso; frecce statiche se il sistema chiede di ridurre le animazioni) o **indice UV** (scala colori OMS, con bagliori animati più fitti e grandi dove l'UV è più alto) o **temperatura** a 2 m (colori e valori in °C sulla mappa). Questi dati
 esistono solo come modello (Open-Meteo), quindi in quelle modalità la fonte è
 sempre il modello, orario, per ±15 giorni. Sotto l'orario sono sempre indicati,
-per il centro della mappa, pioggia, vento (con direzione e raffiche) e indice UV
+per il centro della mappa, temperatura, pioggia, vento (con direzione e raffiche) e indice UV
 con la categoria di esposizione, il consiglio di protezione (al passaggio del
 mouse) e il picco UV del giorno.
 
