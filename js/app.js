@@ -23,6 +23,8 @@ const prefs = (() => {
     layer: ['wind', 'uv', 'temp'].includes(p.layer) ? p.layer : 'precip',
     mode: typeof p.mode === 'string' && (p.mode === 'auto' || byId[p.mode]) ? p.mode : 'auto',
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
+    // Riepilogo previsioni aperto (chiuso di default sui telefoni).
+    recap: typeof p.recap === 'boolean' ? p.recap : !window.matchMedia('(max-width: 700px), (max-height: 500px)').matches,
   };
 })();
 const savePrefs = () => store.set(PREFS_KEY, prefs);
@@ -750,6 +752,7 @@ function gotoInputTime() {
 function renderSourceInfo() {
   const box = $('source-info');
   box.replaceChildren();
+  renderRecap();
   const p = state.pick;
   if (!p) {
     box.append(el('span', { class: 'muted', text: prefs.mode === 'auto' || prefs.layer !== 'precip' ? 'Nessun dato disponibile' : `${byId[prefs.mode].short}: nessun dato in questo istante` }));
@@ -806,8 +809,173 @@ function uvDayMax(t) {
   return best;
 }
 
+// ------------------------------------------------------------------ riepilogo previsioni
+// Riquadro richiudibile sulla mappa: temperatura minima e massima nella zona visibile
+// (griglia del modello) e previsione giorno per giorno al centro (serie puntuale).
+const dayStart = t => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const nextDay = t => { const d = new Date(t); d.setDate(d.getDate() + 1); return d.getTime(); };
+const tempColor = rampColor(TEMP_STOPS);
+const WMO_ICON = [[95, '⛈️', 'temporale'], [85, '🌨️', 'rovesci di neve'], [80, '🌦️', 'rovesci'], [71, '🌨️', 'neve'],
+  [61, '🌧️', 'pioggia'], [51, '🌦️', 'pioviggine'], [45, '🌫️', 'nebbia'], [3, '☁️', 'coperto'], [1, '⛅', 'parz. nuvoloso'], [0, '☀️', 'sereno']];
+const wmoIcon = code => WMO_ICON.find(([c]) => code >= c) || WMO_ICON[WMO_ICON.length - 1];
+
+// Punti della griglia che cadono nella vista, più una maglia interpolata (a zoom alti
+// la vista può contenere pochissimi punti della griglia).
+function zoneSamples(d, b) {
+  const out = [];
+  const s = Math.max(-MAX_LAT, b.getSouth()), n = Math.min(MAX_LAT, b.getNorth());
+  const w = b.getWest(), width = Math.min(360, b.getEast() - w);
+  for (let r = 0; r < d.ny; r++) {
+    const lat = latOfY(d.yN - (r + 0.5) * (d.yN - d.yS) / d.ny);
+    if (lat < s || lat > n) continue;
+    for (let c = 0; c < d.nx; c++) {
+      const lon = d.w + (c + 0.5) * (d.e - d.w) / d.nx;
+      if (mod360(lon - w) <= width) out.push([r, c]);
+    }
+  }
+  const K = 7;
+  for (let i = 0; i < K; i++) for (let j = 0; j < K; j++) {
+    const r = rowPos(d, s + (n - s) * i / (K - 1)), c = colPos(d, w + width * j / (K - 1));
+    if (Number.isFinite(r) && Number.isFinite(c)) out.push([r, c]);
+  }
+  return out;
+}
+function zoneRange(d, samples, idxs) {
+  let min = Infinity, max = -Infinity;
+  for (const idx of idxs) {
+    if (idx < 0 || idx >= d.len) continue;
+    const a = gridSlice(d, 'temperature_2m', idx);
+    for (const [r, c] of samples) {
+      const v = bilinear(d, a, r, c);
+      if (Number.isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
+    }
+  }
+  return min <= max ? { min, max } : null;
+}
+
+// Riepilogo giornaliero al centro: min/max temperatura, pioggia totale, vento massimo, UV massimo, tempo prevalente.
+function pointDays(from, n) {
+  if (!point) return [];
+  const ser = point.series, days = [];
+  for (let d0 = dayStart(from), k = 0; k < n; k++, d0 = nextDay(d0)) {
+    const d1 = nextDay(d0), day = { t: d0, min: Infinity, max: -Infinity, rain: 0, wind: 0, uv: 0, code: -1, hours: 0 };
+    for (let i = Math.ceil((d0 - point.t0) / HOUR); point.t0 + i * HOUR < d1; i++) {
+      const tp = ser.temperature_2m[i];
+      if (!Number.isFinite(tp)) continue;
+      day.hours++;
+      day.min = Math.min(day.min, tp); day.max = Math.max(day.max, tp);
+      // la precipitazione all'ora i è la somma dell'ora precedente
+      if (Number.isFinite(ser.precipitation[i + 1])) day.rain += ser.precipitation[i + 1];
+      if (Number.isFinite(ser.wind_speed_10m[i])) day.wind = Math.max(day.wind, ser.wind_speed_10m[i]);
+      if (Number.isFinite(ser.uv_index[i])) day.uv = Math.max(day.uv, ser.uv_index[i]);
+      if (Number.isFinite(ser.weather_code?.[i])) day.code = Math.max(day.code, ser.weather_code[i]);
+    }
+    if (day.hours >= 12) days.push(day);
+  }
+  return days;
+}
+
+const recapCtl = L.control({ position: 'topright' });
+let recapBox = null, recapKey = '', recapGridTimer = null, recapGridFail = '';
+recapCtl.onAdd = () => {
+  recapBox = el('div', { class: 'recap' });
+  L.DomEvent.disableClickPropagation(recapBox);
+  L.DomEvent.disableScrollPropagation(recapBox);
+  return recapBox;
+};
+recapCtl.addTo(map);
+
+// Se la vista non ha una griglia del modello (es. pioggia da radar) la si carica a parte, con calma.
+function scheduleRecapGrid() {
+  clearTimeout(recapGridTimer);
+  recapGridTimer = setTimeout(async () => {
+    const key = `${map.getBounds().toBBoxString()}|${floorTo(state.t, 60)}`;
+    if (key === recapGridFail) return;
+    try { await modelGrid.ensure(state.t, () => false); } catch { recapGridFail = key; }
+    recapKey = '';
+    renderRecap();
+  }, 1200);
+}
+
+const fmtT = v => `${Math.round(v)}°`;
+function rangeChip(r, label) {
+  const box = el('span', { class: 'recap-range', title: label });
+  for (const [v, cls] of [[r.min, 'lo'], [r.max, 'hi']]) {
+    const c = tempColor(v), chip = el('b', { class: cls, text: fmtT(v) });
+    chip.style.borderColor = `rgb(${c[0]},${c[1]},${c[2]})`;
+    box.append(chip);
+  }
+  return box;
+}
+
+function renderRecap() {
+  if (!recapBox) return;
+  const b = map.getBounds(), z = map.getZoom(), h = floorTo(state.t, 60), d0 = dayStart(state.t);
+  const grid = modelGrid.cache.find(g => modelGrid._fits(g, b, z, state.t));
+  const key = [grid?.id, b.toBBoxString(), h, point?.t0, point?.lat, point?.lon, prefs.recap].join('|');
+  if (key === recapKey) return;
+  recapKey = key;
+  if (!grid && prefs.recap && state.pick?.s.id !== 'openmeteo') scheduleRecapGrid();
+
+  let now = null, day = null;
+  if (grid) {
+    const samples = zoneSamples(grid, b), i0 = Math.round((h - grid.t0) / HOUR);
+    now = zoneRange(grid, samples, [i0]);
+    const idxs = [];
+    for (let t = d0, d1 = nextDay(d0); t < d1; t += HOUR) idxs.push(Math.round((t - grid.t0) / HOUR));
+    day = zoneRange(grid, samples, idxs);
+  }
+  const days = pointDays(state.t, 7);
+
+  const open = prefs.recap;
+  const head = el('button', { class: 'recap-head', 'aria-expanded': String(open), title: open ? 'Riduci il riepilogo' : 'Mostra il riepilogo delle previsioni' },
+    el('strong', { text: 'Previsioni' }));
+  const sum = day || (days[0] && days[0].t === d0 ? days[0] : null);
+  if (days[0]?.code >= 0) head.append(el('span', { class: 'recap-icon', text: wmoIcon(days[0].code)[1] }));
+  if (sum) head.append(rangeChip(sum, day ? 'Minima e massima del giorno nella zona visibile' : 'Minima e massima del giorno al centro'));
+  head.append(el('span', { class: 'recap-chev', 'aria-hidden': 'true', text: open ? '▾' : '▸' }));
+  head.addEventListener('click', () => { prefs.recap = !prefs.recap; savePrefs(); recapKey = ''; renderRecap(); });
+  recapBox.replaceChildren(head);
+  if (!open) return;
+
+  const body = el('div', { class: 'recap-body' });
+  const zone = el('div', { class: 'recap-zone' }, el('div', { class: 'muted small', text: 'Temperatura nella zona visibile' }));
+  if (now || day) {
+    if (now) zone.append(el('div', { class: 'recap-line' }, el('span', { text: `alle ${fmtHM.format(h)}` }), rangeChip(now, 'Minima e massima nella zona visibile, ora selezionata')));
+    if (day) zone.append(el('div', { class: 'recap-line' }, el('span', { text: fmtDay.format(d0) }), rangeChip(day, 'Minima e massima del giorno nella zona visibile')));
+  } else zone.append(el('div', { class: 'muted small', text: grid ? 'Nessun dato per quest’ora' : 'Carico la griglia del modello…' }));
+  body.append(zone);
+
+  if (days.length) {
+    const lo = Math.min(...days.map(x => x.min)), hi = Math.max(...days.map(x => x.max)), span = Math.max(1, hi - lo);
+    const list = el('div', { class: 'recap-days' }, el('div', { class: 'muted small', text: 'Al centro della mappa' }));
+    for (const x of days) {
+      const [, icon, desc] = x.code >= 0 ? wmoIcon(x.code) : [0, '', ''];
+      const bar = el('span', { class: 'recap-bar' }), fill = el('i');
+      const c0 = tempColor(x.min), c1 = tempColor(x.max);
+      fill.style.left = `${(x.min - lo) / span * 100}%`;
+      fill.style.width = `${Math.max(4, (x.max - x.min) / span * 100)}%`;
+      fill.style.background = `linear-gradient(90deg, rgb(${c0.slice(0, 3)}), rgb(${c1.slice(0, 3)}))`;
+      bar.append(fill);
+      const extra = [x.rain >= 0.1 ? `${x.rain < 10 ? x.rain.toFixed(1) : Math.round(x.rain)} mm` : '', `${Math.round(x.wind)} km/h`].filter(Boolean).join(' · ');
+      const row = el('button', {
+        class: 'recap-day' + (x.t === d0 ? ' sel' : ''),
+        title: `${fmtDay.format(x.t)}: ${desc ? desc + ', ' : ''}min ${Math.round(x.min)} °C, max ${Math.round(x.max)} °C, pioggia ${x.rain.toFixed(1)} mm, vento max ${Math.round(x.wind)} km/h, UV max ${Math.round(x.uv)}. Vai a mezzogiorno.`,
+      },
+        el('span', { class: 'recap-dname', text: fmtDay.format(x.t) }),
+        el('span', { class: 'recap-icon', text: icon }),
+        el('span', { class: 'recap-min', text: fmtT(x.min) }), bar, el('span', { class: 'recap-max', text: fmtT(x.max) }),
+        el('span', { class: 'recap-extra muted', text: extra }));
+      row.addEventListener('click', () => { stopLoop(); play(false); setTime(x.t + 12 * HOUR); });
+      list.append(row);
+    }
+    body.append(list);
+  } else body.append(el('div', { class: 'muted small', text: 'Previsione al centro non disponibile' }));
+  recapBox.append(body);
+}
+
 // ------------------------------------------------------------------ serie puntuale + timeline
-const POINT_PARAMS = ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index'];
+const POINT_PARAMS = ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index', 'weather_code'];
 let point = null; // { lat, lon, t0, series: { param: valori orari } }
 let pointTimer = null;
 function schedulePointFetch() {

@@ -170,3 +170,40 @@ body.dark .goto input { color-scheme: dark; }
 }
 .legend span { display: inline-flex; align-items: center; gap: 3px; }
 .legend i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* riepilogo previsioni (richiudibile) */
+.recap {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18); width: 270px; max-width: calc(100vw - 70px); font-size: 12px; overflow: hidden;
+}
+.recap-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; border: 0; border-radius: 0; background: transparent;
+  padding: 6px 10px; text-align: left;
+}
+.recap-head strong { margin-right: auto; font-size: 13px; }
+.recap-chev { color: var(--fg-muted); width: 10px; }
+.recap-range { display: inline-flex; gap: 3px; font-variant-numeric: tabular-nums; }
+.recap-range b { font-weight: 600; padding: 0 4px; border-left: 3px solid; border-radius: 2px; background: var(--btn); }
+.recap-body { border-top: 1px solid var(--border); padding: 6px 10px 8px; max-height: min(60vh, 420px); overflow: auto; }
+.recap-zone { margin-bottom: 6px; }
+.recap-line { display: flex; justify-content: space-between; align-items: center; margin-top: 3px; }
+.recap-days { display: flex; flex-direction: column; gap: 1px; }
+.recap-day {
+  display: grid; grid-template-columns: 48px 20px 30px 1fr 30px; grid-template-rows: auto auto; align-items: center;
+  column-gap: 4px; width: 100%; padding: 3px 4px; border: 0; background: transparent; text-align: left;
+  font-variant-numeric: tabular-nums; min-height: 0;
+}
+.recap-day.sel { background: var(--btn-hover); }
+.recap-icon { text-align: center; }
+.recap-min { text-align: right; color: var(--fg-muted); }
+.recap-bar { position: relative; height: 5px; border-radius: 3px; background: var(--btn); }
+.recap-bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.recap-extra { grid-column: 3 / -1; font-size: 11px; }
+@media (max-width: 700px), (max-height: 500px) {
+  .recap { width: 240px; }
+  .recap-body { max-height: 45dvh; }
+  .recap-head { min-height: 32px; }
+}
+@media (max-height: 500px) {
+  .recap-body { max-height: calc(100dvh - 200px); }
+}

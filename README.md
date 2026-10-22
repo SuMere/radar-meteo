@@ -81,6 +81,17 @@ per il centro della mappa, temperatura, pioggia, vento (con direzione e raffiche
 con la categoria di esposizione, il consiglio di protezione (al passaggio del
 mouse) e il picco UV del giorno.
 
+## Riepilogo previsioni
+
+In alto a destra sulla mappa c'è un riquadro **Previsioni**, che si apre e si chiude
+con un clic (chiuso di default sui telefoni). Anche chiuso mostra la temperatura minima
+e massima del giorno nella zona visibile. Aperto mostra la minima e la massima nella
+zona visibile, sia per l'ora selezionata sia per l'intera giornata (dalla griglia del
+modello), e 7 giorni di previsione al centro della mappa: tempo prevalente, minima e
+massima, pioggia totale e vento massimo. Un clic su un giorno porta a mezzogiorno di
+quel giorno. Con la pioggia da radar la griglia del modello serve solo al riquadro:
+viene caricata solo se il riquadro è aperto.
+
 ## Comandi
 
 - slider/timeline: trascina o clicca; la timeline mostra la disponibilità di
