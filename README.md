@@ -1,7 +1,7 @@
 # Radar Meteo
 
 Radar meteo di qualsiasi luogo, con scelta automatica della fonte migliore e
-navigazione di ±15 giorni nel tempo.
+navigazione nel tempo dal 1° gennaio 1940 a +15 giorni.
 
 ## Avvio
 
@@ -43,16 +43,17 @@ L'app è statica, quindi funziona anche da GitHub Pages
 | Fonte | Tipo | Copertura | Passato | Futuro |
 |---|---|---|---|---|
 | DWD RADOLAN | radar, 1 km, 5 min | Germania e confinanti | ~3,5 giorni | nowcast 2 h |
-| NOAA NEXRAD (IEM) | radar, 1 km, 5 min | USA | archivio (usati 15 g) | – |
+| NOAA NEXRAD (IEM) | radar, 1 km, 5 min | USA | dal 1995 (N0R, poi N0Q da nov 2010) | – |
 | RainViewer | mosaico radar mondiale, 10 min | dove esistono radar (verificato con la loro mappa di copertura) | 2 h | – |
-| EUMETSAT H SAF H60B / H63 | satellite, ~4 km, 15 min | Europa, Africa / Asia, Oceano Indiano | anni (usati 15 g) | – |
-| NASA GPM IMERG | satellite, ~10 km, 30 min | globale ±60° | mesi (usati 15 g, ritardo ~6 h) | – |
-| Open-Meteo (best match) | modelli numerici, orario | globale | 15 giorni (analisi) | 16 giorni |
+| EUMETSAT H SAF H60B / H63 | satellite, ~4 km, 15 min | Europa, Africa / Asia, Oceano Indiano | da dic 2022 | – |
+| NASA GPM IMERG | satellite, ~10 km, 30 min | globale ±60° | dal 1998 (ritardo ~6 h) | – |
+| Open-Meteo (best match) | modelli numerici, orario | globale | ~3 mesi (analisi), dal 23/03/2021 (archivio delle previsioni), dal 1940 (rianalisi ERA5, ~25 km) | 16 giorni |
 
-Nessun servizio gratuito offre radar *osservato* per 15 giorni ovunque: per il
-passato remoto l'app usa radar dove c'è archivio (USA, Germania), altrimenti
-stime da satellite; per il futuro solo i modelli (che a lungo termine sono
-indicativi). Il tipo di dato mostrato (osservato / nowcast / analisi / previsione)
+Nessun servizio gratuito offre radar *osservato* ovunque e per decenni: per il
+passato remoto l'app usa radar dove c'è archivio (USA), altrimenti stime da
+satellite (dal 1998) e prima ancora la rianalisi ERA5; per il futuro solo i
+modelli (che a lungo termine sono indicativi). L'indice UV esiste solo dal
+23/03/2021. Il tipo di dato mostrato (osservato / nowcast / analisi / previsione)
 è sempre indicato sotto l'orario.
 
 ## Rating
@@ -76,7 +77,7 @@ una fonte specifica.
 Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore e particelle
 animate che seguono il flusso; frecce statiche se il sistema chiede di ridurre le animazioni) o **indice UV** (scala colori OMS, con bagliori animati più fitti e grandi dove l'UV è più alto) o **temperatura** a 2 m (colori e valori in °C sulla mappa). Questi dati
 esistono solo come modello (Open-Meteo), quindi in quelle modalità la fonte è
-sempre il modello, orario, per ±15 giorni. Sotto l'orario sono sempre indicati,
+sempre il modello, orario, dal 1940 (UV dal 2021) a +15 giorni. Sotto l'orario sono sempre indicati,
 per il centro della mappa, temperatura, pioggia, vento (con direzione e raffiche) e indice UV
 con la categoria di esposizione, il consiglio di protezione (al passaggio del
 mouse) e il picco UV del giorno.
@@ -94,10 +95,13 @@ viene caricata solo se il riquadro è aperto.
 
 ## Comandi
 
-- slider/timeline: trascina o clicca; la timeline mostra la disponibilità di
-  ogni fonte e la pioggia oraria prevista/stimata al centro della mappa
-- **Vai a**: scegli data e ora precise (ora locale, entro ±15 giorni) e premi
-  **Vai** o `Invio`
+- slider/timeline: trascina o clicca; la timeline mostra 30 giorni, la disponibilità di
+  ogni fonte e la pioggia oraria prevista/stimata al centro della mappa. Andando oltre
+  i bordi (con −1g, −30g, le frecce, la riproduzione o **Vai a**) la finestra si sposta;
+  lontano da oggi in alto a destra compaiono mese e anno
+- **Vai a**: scegli data e ora precise (ora locale, dal 1940 a +15 giorni) e premi
+  **Vai** o `Invio`; **⇤** porta al dato più vecchio (1° gennaio 1940)
+- **−30g** / **+30g** (solo su schermi larghi): salta di un mese
 - `←` `→` frame precedente/successivo, `Maiusc+←/→` ±1 ora, `spazio` play/pausa
 - **⟲ 2h**: animazione in loop delle ultime 2 ore · **● Adesso**: segue l'ultimo dato in tempo reale
 

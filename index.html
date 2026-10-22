@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov; connect-src https://api.rainviewer.com https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov https://api.open-meteo.com https://geocoding-api.open-meteo.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov; connect-src https://api.rainviewer.com https://tilecache.rainviewer.com https://maps.dwd.de https://mesonet.agron.iastate.edu https://view.eumetsat.int https://gibs.earthdata.nasa.gov https://api.open-meteo.com https://historical-forecast-api.open-meteo.com https://archive-api.open-meteo.com https://geocoding-api.open-meteo.com; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="strict-origin">
 <title>Radar Meteo</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=">
@@ -67,15 +67,18 @@
   <div class="time-row">
     <div class="time"><span id="time-main"></span> <span id="time-rel" class="muted"></span></div>
     <div class="goto">
-      <input id="goto-time" type="datetime-local" step="60" aria-label="Vai a data e ora (ora locale)" title="Vai a data e ora precise (ora locale, ±15 giorni)">
+      <input id="goto-time" type="datetime-local" step="60" aria-label="Vai a data e ora (ora locale)" title="Vai a data e ora precise (ora locale, dal 1940 a +15 giorni)">
       <button id="btn-goto" title="Vai alla data e ora indicate (Invio)">Vai</button>
+      <button id="btn-oldest" title="Vai al dato più vecchio disponibile (1° gennaio 1940, rianalisi ERA5)">⇤</button>
     </div>
     <div class="buttons">
-      <button id="btn-day-back" title="-1 giorno">−1g</button>
+      <button id="btn-month-back" class="wide-only" title="−30 giorni">−30g</button>
+      <button id="btn-day-back" title="−1 giorno">−1g</button>
       <button id="btn-prev" title="Frame precedente (←, Maiusc+← = −1 h)">«</button>
       <button id="btn-play" title="Riproduci (spazio)">▶</button>
       <button id="btn-next" title="Frame successivo (→, Maiusc+→ = +1 h)">»</button>
       <button id="btn-day-fwd" title="+1 giorno">+1g</button>
+      <button id="btn-month-fwd" class="wide-only" title="+30 giorni">+30g</button>
       <button id="btn-loop" title="Animazione delle ultime 2 ore in loop">⟲ 2h</button>
       <button id="btn-live" title="Vai all'ultimo dato osservato e seguilo">● Adesso</button>
       <select id="speed" title="Velocità animazione">
@@ -85,7 +88,7 @@
   </div>
   <div id="source-info" class="source-info"></div>
   <canvas id="timeline" class="timeline" aria-hidden="true"></canvas>
-  <input id="slider" type="range" class="slider" aria-label="Istante visualizzato (±15 giorni)">
+  <input id="slider" type="range" class="slider" aria-label="Istante visualizzato (finestra di 30 giorni)">
   <div id="tl-legend" class="tl-legend muted small"></div>
 </footer>
 </body>

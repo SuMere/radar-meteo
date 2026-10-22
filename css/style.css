@@ -135,6 +135,7 @@ body.dark .goto input { color-scheme: dark; }
   .buttons { flex-basis: 100%; flex-wrap: nowrap; }
   .buttons > * { flex: 1 1 0; min-width: 0; padding: 4px 2px; font-size: 13px; white-space: nowrap; }
   .buttons #btn-live { flex-grow: 2.4; }
+  .buttons .wide-only { display: none; }
   .buttons #speed { flex: 0 0 auto; padding: 4px 4px; font-size: 13px; }
   .map-note { top: auto; bottom: 34px; }
   .source-info { font-size: 12px; }

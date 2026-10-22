@@ -1,9 +1,9 @@
 // Radar Meteo – applicazione principale.
-import { SOURCES, KIND_LABEL } from './sources.js';
+import { SOURCES, KIND_LABEL, OM_START, OM_HIST_START, omEnd, omEndpoint } from './sources.js';
 import { Rating, RATE_INTERVAL } from './rating.js';
 import { safeFetch, store, el, clamp, floorTo, fmtAge, isoZ, MIN, HOUR, DAY } from './util.js';
 
-const RANGE_MIN = 15 * 1440;         // ±15 giorni, in minuti
+const RANGE_MIN = 15 * 1440;         // la timeline mostra ±15 giorni attorno al suo centro, in minuti
 const SLIDER_STEP = 5;               // minuti
 const PREFS_KEY = 'radar-meteo.prefs.v1';
 const $ = id => document.getElementById(id);
@@ -316,10 +316,11 @@ class ModelGrid {
       lats.push(latOfY(yN - (r + 0.5) * (yN - yS) / ny).toFixed(3));
       lons.push((mod360(w + (c + 0.5) * (e - w) / nx + 180) - 180).toFixed(3));
     }
-    const h0 = floorTo(t, 60) - 2 * DAY, h1 = floorTo(t, 60) + 4 * DAY; // < 2 settimane: 1 chiamata per punto
-    const hh = x => isoZ(x).slice(0, 16);
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}` +
-      `&hourly=${GRID_PARAMS.join(',')}&timezone=GMT&models=best_match&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
+    // < 2 settimane: 1 chiamata per punto
+    const h0 = Math.max(OM_START, floorTo(t, 60) - 2 * DAY), h1 = Math.min(omEnd(), floorTo(t, 60) + 4 * DAY);
+    const hh = x => isoZ(x).slice(0, 16), ep = omEndpoint(h0);
+    const url = `${ep.url}?latitude=${lats.join(',')}&longitude=${lons.join(',')}` +
+      `&hourly=${GRID_PARAMS.join(',')}&timezone=GMT${ep.models ? '&models=best_match' : ''}&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
     const { body } = await omFetch(url, { timeout: 25000 });
     const arr = Array.isArray(body) ? body : [body];
     if (arr.length !== nx * ny) throw new Error('Griglia incompleta');
@@ -607,7 +608,9 @@ function showModelLegend(on) {
 const rating = new Rating(SOURCES);
 const disabled = new Set(prefs.disabled);
 const state = {
-  anchor: floorTo(Date.now(), SLIDER_STEP),
+  now: floorTo(Date.now(), SLIDER_STEP), // adesso, aggiornato ogni minuto
+  center: floorTo(Date.now(), SLIDER_STEP), // centro della timeline (±15 giorni)
+  follow: true, // la timeline segue l'ora attuale
   t: Date.now(),
   live: true,
   playing: false,
@@ -642,7 +645,10 @@ function candidatesAt(t, lat, lon) {
 }
 
 function frameKindLabel(src, f) {
-  if (src.kind === 'model') return f.time + HOUR <= Date.now() ? 'analisi del modello' : 'previsione del modello';
+  if (src.kind === 'model') {
+    if (f.time + HOUR > Date.now()) return 'previsione del modello';
+    return omEndpoint(f.time).kind === 'era5' ? 'rianalisi ERA5' : 'analisi del modello';
+  }
   if (f.nowcast) return 'nowcast (estrapolazione radar)';
   return 'osservato';
 }
@@ -695,7 +701,7 @@ async function update() {
       pane: 'radar', interactive: false, attribution: pick.s.attribution, className: 'model-overlay',
     }));
     if (FIELD_LAYERS.has(prefs.layer)) fieldAnim.setSource(modelGrid.data, r.idx, prefs.layer);
-    setMapNote(null);
+    setMapNote(prefs.layer === 'uv' && pick.f.time < OM_HIST_START ? `Indice UV disponibile solo dal ${fmtDate.format(OM_HIST_START)}.` : null);
     renderSourceInfo();
   } else {
     frames.show(pick.f.key, () => pick.s.layer(pick.f));
@@ -717,18 +723,30 @@ function setMapNote(text) {
 }
 
 const fmtFull = new Intl.DateTimeFormat('it-IT', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtFullY = new Intl.DateTimeFormat('it-IT', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const fmtDate = new Intl.DateTimeFormat('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+const fmtMonth = new Intl.DateTimeFormat('it-IT', { month: 'short', year: 'numeric' });
 const fmtHM = new Intl.DateTimeFormat('it-IT', { hour: '2-digit', minute: '2-digit' });
 const fmtDay = new Intl.DateTimeFormat('it-IT', { weekday: 'short', day: 'numeric' });
 
 function renderTimeLabel() {
   const d = state.t - Date.now();
-  $('time-main').textContent = fmtFull.format(state.t);
-  $('time-rel').textContent = Math.abs(d) < 3 * MIN ? 'adesso' : d < 0 ? `${fmtAge(-d)} fa` : `tra ${fmtAge(d)}`;
+  const sameYear = new Date(state.t).getFullYear() === new Date().getFullYear();
+  $('time-main').textContent = (sameYear ? fmtFull : fmtFullY).format(state.t);
+  $('time-rel').textContent = Math.abs(d) < 3 * MIN ? 'adesso' : d < 0 ? `${fmtAgo(-d)} fa` : `tra ${fmtAge(d)}`;
   $('time-main').title = 'UTC: ' + isoZ(state.t);
-  $('slider').value = String(Math.round((state.t - state.anchor) / MIN / SLIDER_STEP) * SLIDER_STEP);
+  $('slider').value = String(Math.round((state.t - state.center) / MIN / SLIDER_STEP) * SLIDER_STEP);
   $('btn-live').classList.toggle('active', state.live);
   const gi = $('goto-time');
   if (document.activeElement !== gi) gi.value = toLocalInput(state.t);
+}
+
+// Oltre i due mesi si contano mesi e anni.
+function fmtAgo(ms) {
+  const days = ms / DAY;
+  if (days < 60) return fmtAge(ms);
+  if (days < 730) return `${Math.round(days / 30.44)} mesi`;
+  return `${Math.floor(days / 365.25)} anni`;
 }
 
 const pad2 = n => String(n).padStart(2, '0');
@@ -737,7 +755,7 @@ function toLocalInput(t) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 function updateGotoRange() {
-  const [a, b] = tRange(), gi = $('goto-time');
+  const [a, b] = tLimits(), gi = $('goto-time');
   gi.min = toLocalInput(a); gi.max = toLocalInput(b);
 }
 function gotoInputTime() {
@@ -929,7 +947,7 @@ function renderRecap() {
 
   const open = prefs.recap;
   const head = el('button', { class: 'recap-head', 'aria-expanded': String(open), title: open ? 'Riduci il riepilogo' : 'Mostra il riepilogo delle previsioni' },
-    el('strong', { text: 'Previsioni' }));
+    el('strong', { text: d0 < dayStart(Date.now()) ? 'Riepilogo' : 'Previsioni' }));
   const sum = day || (days[0] && days[0].t === d0 ? days[0] : null);
   if (days[0]?.code >= 0) head.append(el('span', { class: 'recap-icon', text: wmoIcon(days[0].code)[1] }));
   if (sum) head.append(rangeChip(sum, day ? 'Minima e massima del giorno nella zona visibile' : 'Minima e massima del giorno al centro'));
@@ -976,19 +994,23 @@ function renderRecap() {
 
 // ------------------------------------------------------------------ serie puntuale + timeline
 const POINT_PARAMS = ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index', 'weather_code'];
-let point = null; // { lat, lon, t0, series: { param: valori orari } }
-let pointTimer = null;
+let point = null; // { lat, lon, h0, h1, t0, series: { param: valori orari } }
+let pointTimer = null, pointSeq = 0;
 function schedulePointFetch() {
   clearTimeout(pointTimer);
   pointTimer = setTimeout(fetchPoint, 700);
 }
+// Copre l'intera finestra della timeline (giorni UTC interi), dall'archivio adatto all'epoca.
 async function fetchPoint() {
-  const c = map.getCenter();
-  if (point && map.distance([point.lat, point.lon], c) < 5000) return;
+  const c = map.getCenter(), [a, b] = tRange();
+  const h0 = Math.max(OM_START, floorTo(a, 1440) - DAY), h1 = Math.min(omEnd(), floorTo(b, 1440) + DAY);
+  if (point && map.distance([point.lat, point.lon], c) < 5000 && point.h0 <= Math.max(OM_START, a - HOUR) && point.h1 >= Math.min(omEnd(), b)) return;
   const lat = c.lat.toFixed(3), lon = (((c.lng + 540) % 360) - 180).toFixed(3);
+  const ep = omEndpoint(h0), day = x => isoZ(x).slice(0, 10), seq = ++pointSeq;
   try {
-    const { body } = await omFetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      `&hourly=${POINT_PARAMS.join(',')}&past_days=15&forecast_days=16&timezone=GMT&models=best_match`);
+    const { body } = await omFetch(`${ep.url}?latitude=${lat}&longitude=${lon}` +
+      `&hourly=${POINT_PARAMS.join(',')}&start_date=${day(h0)}&end_date=${day(h1)}&timezone=GMT${ep.models ? '&models=best_match' : ''}`);
+    if (seq !== pointSeq) return; // nel frattempo è partita una richiesta per un'altra finestra o luogo
     const times = body?.hourly?.time;
     if (!Array.isArray(times) || !Array.isArray(body.hourly.precipitation)) throw new Error('dati mancanti');
     const series = {};
@@ -996,8 +1018,9 @@ async function fetchPoint() {
       const vals = Array.isArray(body.hourly[p]) ? body.hourly[p] : [];
       series[p] = vals.map(v => (Number.isFinite(v) ? v : NaN));
     }
-    point = { lat: c.lat, lon: c.lng, t0: Date.parse(times[0] + 'Z'), series };
+    point = { lat: c.lat, lon: c.lng, h0, h1: h1 + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), series };
   } catch (e) {
+    if (seq !== pointSeq) return;
     if (!e.rateLimited) point = null; // con il limite raggiunto si tiene l'ultima serie: si riprova dopo la pausa
   }
   drawTimeline();
@@ -1012,7 +1035,10 @@ function pointValueAt(t, param) {
 }
 
 const tlCanvas = $('timeline');
-function tRange() { return [state.anchor - RANGE_MIN * MIN, state.anchor + RANGE_MIN * MIN]; }
+// Finestra visibile della timeline e limiti assoluti: dal dato più vecchio
+// (rianalisi ERA5, 1940) a +15 giorni.
+function tRange() { return [state.center - RANGE_MIN * MIN, state.center + RANGE_MIN * MIN]; }
+function tLimits() { return [OM_START, state.now + RANGE_MIN * MIN]; }
 const THUMB = 8; // metà larghezza del cursore dello slider: allinea canvas e slider
 function xOf(t, w) { const [a, b] = tRange(); return THUMB + (t - a) / (b - a) * (w - 2 * THUMB); }
 function tOf(x, w) { const [a, b] = tRange(); return a + clamp((x - THUMB) / (w - 2 * THUMB), 0, 1) * (b - a); }
@@ -1043,6 +1069,13 @@ function drawTimeline() {
     if (k % dayStep === 0) { ctx.globalAlpha = 0.8; ctx.fillText(fmtDay.format(d), x + 2, h - 2); ctx.globalAlpha = 0.35; }
   }
   ctx.globalAlpha = 1;
+  // Lontano da oggi: mese e anno della finestra, in alto a destra.
+  if (Date.now() < a || Date.now() > b) {
+    const m0 = fmtMonth.format(a), m1 = fmtMonth.format(b), txt = m0 === m1 ? m0 : `${m0} – ${m1}`;
+    ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = css.getPropertyValue('--fg').trim() || '#000';
+    ctx.fillText(txt, w - THUMB, 11);
+    ctx.textAlign = 'left'; ctx.font = '10px system-ui, sans-serif';
+  }
 
   // Variabile corrente al centro (modello) – barre orarie
   const barBase = h - 13, barMax = barBase - Math.min(26, h * 0.4);
@@ -1087,9 +1120,10 @@ function drawTimeline() {
 function timelineLegend() {
   const box = $('tl-legend');
   box.replaceChildren();
-  const c = map.getCenter();
+  const c = map.getCenter(), [a, b] = tRange();
   for (const s of SOURCES) {
-    if (disabled.has(s.id) || coverageOf(s, c.lat, c.lng) === false || !s.window()) continue;
+    const win = s.window();
+    if (disabled.has(s.id) || coverageOf(s, c.lat, c.lng) === false || !win || win.end < a || win.start > b) continue;
     if (prefs.layer !== 'precip' && s.kind !== 'model') continue;
     const sw = el('i'); sw.style.background = s.color;
     box.append(el('span', {}, sw, s.short));
@@ -1141,10 +1175,23 @@ function renderRatings() {
 
 // ------------------------------------------------------------------ controlli tempo
 function setTime(t, { live = false } = {}) {
+  const [lo, hi] = tLimits();
+  t = clamp(t, lo, hi);
   const [a, b] = tRange();
-  state.t = clamp(t, a, b);
+  if (live) setCenter(state.now);
+  else if (t < a || t > b) setCenter(t);
+  state.t = t;
   state.live = live;
   scheduleUpdate();
+}
+// Sposta la finestra della timeline (non oltre l'ora attuale, così il futuro resta visibile per intero).
+function setCenter(c) {
+  c = clamp(floorTo(c, SLIDER_STEP), tLimits()[0] + RANGE_MIN * MIN, state.now);
+  state.follow = c === state.now;
+  if (c === state.center) return;
+  state.center = c;
+  schedulePointFetch();
+  timelineLegend();
 }
 
 function latestObservation() {
@@ -1182,9 +1229,8 @@ function play(on) {
     const st = state.pick ? state.pick.s.stepMin : 10;
     let t = (state.pick ? state.pick.f.time : state.t) + st * MIN;
     if (state.loop && t > state.loop.end) t = state.loop.start;
-    if (t > tRange()[1]) return play(false);
-    state.t = t; state.live = false;
-    scheduleUpdate();
+    if (t > tLimits()[1]) return play(false);
+    setTime(t);
   };
   playTimer = setInterval(tick, Number($('speed').value));
 }
@@ -1229,7 +1275,7 @@ function goTo(lat, lon, label, zoom) {
 function bindUI() {
   const slider = $('slider');
   slider.min = String(-RANGE_MIN); slider.max = String(RANGE_MIN); slider.step = String(SLIDER_STEP);
-  slider.addEventListener('input', () => { stopLoop(); setTime(state.anchor + Number(slider.value) * MIN); });
+  slider.addEventListener('input', () => { stopLoop(); setTime(state.center + Number(slider.value) * MIN); });
 
   let dragging = false;
   const fromPointer = e => {
@@ -1254,6 +1300,9 @@ function bindUI() {
   });
   $('btn-day-back').addEventListener('click', () => { stopLoop(); setTime(state.t - DAY); });
   $('btn-day-fwd').addEventListener('click', () => { stopLoop(); setTime(state.t + DAY); });
+  $('btn-month-back').addEventListener('click', () => { stopLoop(); setTime(state.t - 30 * DAY); });
+  $('btn-month-fwd').addEventListener('click', () => { stopLoop(); setTime(state.t + 30 * DAY); });
+  $('btn-oldest').addEventListener('click', () => { stopLoop(); play(false); setTime(tLimits()[0]); });
   $('speed').addEventListener('change', () => { if (state.playing) play(true); });
   updateGotoRange();
   $('btn-goto').addEventListener('click', gotoInputTime);
@@ -1348,7 +1397,8 @@ function bindUI() {
 window.addEventListener('error', e => setMapNote('Errore: ' + e.message));
 window.addEventListener('unhandledrejection', e => setMapNote('Errore: ' + (e.reason?.message || e.reason)));
 function reanchor() {
-  state.anchor = floorTo(Date.now(), SLIDER_STEP);
+  state.now = floorTo(Date.now(), SLIDER_STEP);
+  if (state.follow) state.center = state.now;
   updateGotoRange();
   if (state.live) state.t = latestObservation();
   scheduleUpdate();

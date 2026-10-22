@@ -145,6 +145,8 @@ const dwd = {
 };
 
 // ---------------------------------------------------------------- NOAA NEXRAD via IEM
+// Archivio IEM: composito N0R (8 bit, 1995–2010), poi N0Q (più risoluzione in dBZ).
+const NEXRAD_START = Date.UTC(1995, 0, 1), N0Q_START = Date.UTC(2010, 10, 14);
 const nexrad = {
   id: 'nexrad', name: 'NOAA NEXRAD – composito radar USA (Iowa Environmental Mesonet)', short: 'NEXRAD USA',
   kind: 'radar', color: '#a78bfa', resKm: 1, stepMin: 5, latencyMin: 10,
@@ -155,7 +157,7 @@ const nexrad = {
   async probe() {
     const { body, ms } = await safeFetch('https://mesonet.agron.iastate.edu/data/gis/images/4326/USCOMP/n0q_0.json');
     const latest = parseTime(body?.meta?.valid);
-    this.meta = { start: latest - 20 * DAY, end: latest };
+    this.meta = { start: NEXRAD_START, end: latest };
     return { ms, latest };
   },
   window() { return this.meta.end ? { start: this.meta.start, end: this.meta.end, obsEnd: this.meta.end } : null; },
@@ -167,7 +169,7 @@ const nexrad = {
   },
   qualityAt: () => 1,
   layer(frame) {
-    return L.tileLayer(`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-${compactUTC(frame.time)}/{z}/{x}/{y}.png`, {
+    return L.tileLayer(`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-${frame.time < N0Q_START ? 'N0R' : 'N0Q'}-${compactUTC(frame.time)}/{z}/{x}/{y}.png`, {
       maxNativeZoom: 12, maxZoom: 19, attribution: this.attribution, pane: 'radar', updateWhenZooming: false, keepBuffer: 1,
     });
   },
@@ -189,7 +191,7 @@ function eumetsat(id, layerName, subLon, label, short) {
       this.meta = info;
       return { ms, latest: info.end };
     },
-    window() { return this.meta.end ? { start: Math.max(this.meta.start, this.meta.end - 20 * DAY), end: this.meta.end, obsEnd: this.meta.end } : null; },
+    window() { return this.meta.end ? { start: this.meta.start, end: this.meta.end, obsEnd: this.meta.end } : null; },
     frameAt(t) {
       if (!this.meta.end) return null;
       const ft = snap(t, 15);
@@ -203,6 +205,7 @@ function eumetsat(id, layerName, subLon, label, short) {
 
 // ---------------------------------------------------------------- NASA IMERG (satellite)
 const IMERG = 'IMERG_Precipitation_Rate_30min';
+const IMERG_START = Date.UTC(1998, 0, 1); // inizio della serie IMERG V07 su GIBS
 const imerg = {
   id: 'imerg', name: 'NASA GPM IMERG – precipitazione da satellite (globale, 30 min)', short: 'NASA IMERG',
   kind: 'satellite', color: '#f472b6', resKm: 10, stepMin: 30, latencyMin: 360,
@@ -219,7 +222,7 @@ const imerg = {
     const dom = doc.getElementsByTagName('Domain')[0];
     if (!dom) throw new Error('Dominio temporale assente');
     const { end } = parseIsoInterval(dom.textContent);
-    this.meta = { start: end - 20 * DAY, end };
+    this.meta = { start: IMERG_START, end };
     return { ms, latest: end };
   },
   window() { return this.meta.end ? { start: this.meta.start, end: this.meta.end, obsEnd: this.meta.end } : null; },
@@ -239,9 +242,26 @@ const imerg = {
 
 // ---------------------------------------------------------------- Open-Meteo (modelli)
 // Unica fonte che copre il futuro: griglia di punti dal modello migliore per la zona
-// ("best_match": ICON-D2, AROME, HRRR, ... a seconda del luogo), ±15 giorni.
+// ("best_match": ICON-D2, AROME, HRRR, ... a seconda del luogo), fino a +16 giorni.
+// Per il passato si usano tre archivi, in ordine di dettaglio:
+//   forecast            ultimi ~3 mesi (stessi modelli della previsione)
+//   historical-forecast dal 23/03/2021 (archivio delle corse dei modelli, con indice UV)
+//   archive (ERA5)      dal 1940 (rianalisi ~25 km, senza indice UV)
+export const OM_START = Date.UTC(1940, 0, 1);
+export const OM_HIST_START = Date.UTC(2021, 2, 23);
+const OM_FORECAST_PAST_DAYS = 90; // l'API forecast accetta ~92 giorni nel passato
+
+// Fine della previsione: oggi (UTC) + 16 giorni.
+export const omEnd = (now = Date.now()) => floorTo(now, 1440) + 16 * DAY - HOUR;
+
+// Archivio Open-Meteo da usare per un intervallo che inizia a h0.
+export function omEndpoint(h0, now = Date.now()) {
+  if (h0 >= floorTo(now, 1440) - OM_FORECAST_PAST_DAYS * DAY) return { kind: 'forecast', url: 'https://api.open-meteo.com/v1/forecast', models: true };
+  if (h0 >= OM_HIST_START) return { kind: 'historical', url: 'https://historical-forecast-api.open-meteo.com/v1/forecast', models: true };
+  return { kind: 'era5', url: 'https://archive-api.open-meteo.com/v1/archive', models: false };
+}
 const openmeteo = {
-  id: 'openmeteo', name: 'Open-Meteo – modelli numerici (best match), passato e previsione ±15 g', short: 'Modello Open-Meteo',
+  id: 'openmeteo', name: 'Open-Meteo – modelli numerici (best match) e rianalisi ERA5, dal 1940 a +16 g', short: 'Modello Open-Meteo',
   kind: 'model', color: '#94a3b8', resKm: 11, stepMin: 60, latencyMin: 0,
   homepage: 'https://open-meteo.com/',
   attribution: 'Modelli © <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0)',
@@ -254,7 +274,7 @@ const openmeteo = {
   },
   window() {
     const now = Date.now();
-    return { start: floorTo(now, 1440) - 15 * DAY, end: floorTo(now, 1440) + 16 * DAY - HOUR, obsEnd: now };
+    return { start: OM_START, end: omEnd(now), obsEnd: now };
   },
   frameAt(t) {
     const w = this.window();
@@ -264,7 +284,8 @@ const openmeteo = {
   },
   qualityAt(t) {
     const leadD = (t - Date.now()) / DAY;
-    return leadD <= 0 ? 0.9 : Math.max(0.3, 1 - leadD / 15 * 0.7);
+    if (leadD <= 0) return t < OM_HIST_START ? 0.8 : 0.9;
+    return Math.max(0.3, 1 - leadD / 15 * 0.7);
   },
   layer: null, // gestito da ModelGrid in app.js
 };

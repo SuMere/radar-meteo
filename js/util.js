@@ -11,6 +11,8 @@ export const ALLOWED_HOSTS = new Set([
   'view.eumetsat.int',
   'gibs.earthdata.nasa.gov',
   'api.open-meteo.com',
+  'historical-forecast-api.open-meteo.com',
+  'archive-api.open-meteo.com',
   'geocoding-api.open-meteo.com',
 ]);
 
