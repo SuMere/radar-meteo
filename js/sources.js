@@ -285,9 +285,10 @@ const openmeteo = {
   },
   frameAt(t) {
     const w = this.window();
-    const ft = floorTo(t, 60);
+    const stepMin = t >= OM_HIST_START ? 15 : 60; // 15 min dall'archivio delle previsioni, ERA5 solo orario
+    const ft = floorTo(t, stepMin);
     if (ft < w.start || ft > w.end) return null;
-    return { key: 'om:' + ft, time: ft, model: true };
+    return { key: 'om:' + ft, time: ft, model: true, stepMin };
   },
   qualityAt(t) {
     const leadD = (t - Date.now()) / DAY;

@@ -295,7 +295,7 @@ class ModelGrid {
   // Le latitudini oltre ±MAX_LAT (visibili a zoom bassi) non sono mai coperte: si ignorano,
   // altrimenti ogni aggiornamento richiederebbe una nuova griglia.
   _fits(d, b, z, t) {
-    if (!d || z - d.zoom > 2 || t < d.t0 || t + HOUR > d.t0 + (d.len - 1) * HOUR) return false;
+    if (!d || z - d.zoom > 2 || t < d.t0 || t + d.dt > d.t0 + (d.len - 1) * d.dt) return false;
     if (Math.max(-MAX_LAT, b.getSouth()) < d.s || Math.min(MAX_LAT, b.getNorth()) > d.n) return false;
     if (d.wrap) return true;
     const width = b.getEast() - b.getWest();
@@ -330,20 +330,25 @@ class ModelGrid {
       lats.push(latOfY(yN - (r + 0.5) * (yN - yS) / ny).toFixed(3));
       lons.push((mod360(w + (c + 0.5) * (e - w) / nx + 180) - 180).toFixed(3));
     }
-    // < 2 settimane: 1 chiamata per punto
-    const h0 = Math.max(OM_START, floorTo(t, 60) - 2 * DAY), h1 = Math.min(omEnd(), floorTo(t, 60) + 4 * DAY);
-    const hh = x => isoZ(x).slice(0, 16), ep = omEndpoint(h0);
+    // Dati ogni 15 min dove esistono (archivio delle previsioni, dal 2021), altrimenti orari (ERA5).
+    // A 15 min la finestra è ±1 g (copre sempre il giorno locale del riepilogo) per non quadruplicare i dati.
+    const q15 = omEndpoint(floorTo(t, 60) - DAY).kind !== 'era5', block = q15 ? 'minutely_15' : 'hourly';
+    const h0 = Math.max(OM_START, floorTo(t, 60) - (q15 ? DAY : 2 * DAY)), h1 = Math.min(omEnd(), floorTo(t, 60) + (q15 ? DAY : 4 * DAY));
+    const hh = x => isoZ(x).slice(0, 16), ep = omEndpoint(h0), rng = q15 ? 'minutely_15' : 'hour';
     const url = `${ep.url}?latitude=${lats.join(',')}&longitude=${lons.join(',')}` +
-      `&hourly=${GRID_PARAMS.join(',')}&timezone=GMT${ep.models ? '&models=best_match' : ''}&start_hour=${hh(h0)}&end_hour=${hh(h1)}`;
+      `&${block}=${GRID_PARAMS.join(',')}&timezone=GMT${ep.models ? '&models=best_match' : ''}&start_${rng}=${hh(h0)}&end_${rng}=${hh(h1)}`;
     const { body } = await omFetch(url, { timeout: 25000 });
     const arr = Array.isArray(body) ? body : [body];
     if (arr.length !== nx * ny) throw new Error('Griglia incompleta');
-    const times = arr[0]?.hourly?.time;
+    const times = arr[0]?.[block]?.time;
     if (!Array.isArray(times) || !times.length) throw new Error('Griglia senza dati');
     const t0 = Date.parse(times[0] + 'Z');
     const values = {};
-    for (const p of GRID_PARAMS) values[p] = arr.map(pt => pt.hourly?.[p] || []);
-    this.data = { id: ++this.seq, s, n, w, e, yN, yS, wrap, zoom: z, nx, ny, t0, len: times.length, values, slices: new Map() };
+    for (const p of GRID_PARAMS) values[p] = arr.map(pt => pt[block]?.[p] || []);
+    // La pioggia a 15 min è in mm per quarto d'ora: ×4 per restare in mm/h come la scala colori.
+    if (q15) values.precipitation = values.precipitation.map(a => a.map(v => (v == null ? v : v * 4)));
+    const dt = q15 ? 15 * MIN : HOUR;
+    this.data = { id: ++this.seq, s, n, w, e, yN, yS, wrap, zoom: z, nx, ny, t0, dt, len: times.length, values, slices: new Map() };
     this.cache = [this.data, ...this.cache].slice(0, 4);
     if (this.renders.size > 150) this.renders.clear();
     return this.data;
@@ -351,7 +356,7 @@ class ModelGrid {
   // Valore della variabile corrente per l'ora [ft, ft+1h].
   render(ft) {
     const d = this.data, v = prefs.layer, cfg = VARS[v];
-    const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
+    const idx = Math.round((ft - d.t0) / d.dt) + cfg.offset;
     if (idx < 0 || idx >= d.len) return null;
     const arrows = v === 'wind' && !fieldAnim.enabled; // frecce statiche solo con "riduci movimento"
     // _fits accetta la griglia su qualsiasi copia del mondo: l'immagine va spostata su quella visibile.
@@ -386,7 +391,7 @@ class ModelGrid {
     const d = this.data;
     if (!d) return null;
     const r = rowPos(d, lat), c = colPos(d, lon);
-    const idx = Math.round((ft - d.t0) / HOUR) + VARS[prefs.layer].offset;
+    const idx = Math.round((ft - d.t0) / d.dt) + VARS[prefs.layer].offset;
     if (!Number.isFinite(r) || !Number.isFinite(c) || idx < 0 || idx >= d.len) return null;
     const v = bilinear(d, gridSlice(d, VARS[prefs.layer].params[0], idx), r, c);
     return Number.isFinite(v) ? v : null;
@@ -735,7 +740,7 @@ async function update() {
 }
 
 function preloadNext(pick) {
-  const next = pick.s.frameAt(state.t + (prefs.step || pick.s.stepMin) * MIN);
+  const next = pick.s.frameAt(state.t + (prefs.step || pick.f.stepMin || pick.s.stepMin) * MIN);
   if (next && next.key !== pick.f.key && pick.s.layer) frames.preload(next.key, () => pick.s.layer(next));
 }
 
@@ -960,10 +965,10 @@ function renderRecap() {
 
   let now = null, day = null;
   if (grid) {
-    const samples = zoneSamples(grid, b), i0 = Math.round((h - grid.t0) / HOUR);
+    const samples = zoneSamples(grid, b), i0 = Math.round((h - grid.t0) / grid.dt);
     now = zoneRange(grid, samples, [i0]);
     const idxs = [];
-    for (let t = d0, d1 = nextDay(d0); t < d1; t += HOUR) idxs.push(Math.round((t - grid.t0) / HOUR));
+    for (let t = d0, d1 = nextDay(d0); t < d1; t += grid.dt) idxs.push(Math.round((t - grid.t0) / grid.dt));
     day = zoneRange(grid, samples, idxs);
   }
   const days = pointDays(state.t, 7);
@@ -1273,7 +1278,7 @@ function step(dir) {
     stopLoop();
     return setTime(dir > 0 ? t + prefs.step * MIN : t < state.t ? t : t - prefs.step * MIN);
   }
-  const st = state.pick ? state.pick.s.stepMin : SLIDER_STEP;
+  const st = state.pick ? state.pick.f.stepMin || state.pick.s.stepMin : SLIDER_STEP;
   const base = state.pick ? state.pick.f.time : state.t;
   stopLoop();
   setTime(base + dir * st * MIN);
@@ -1288,7 +1293,7 @@ function play(on) {
   frames.setMax(on ? 8 : 3);
   if (!on) return;
   const tick = () => {
-    const st = prefs.step || (state.pick ? state.pick.s.stepMin : 10);
+    const st = prefs.step || (state.pick ? state.pick.f.stepMin || state.pick.s.stepMin : 10);
     let t = (prefs.step ? localFloor(state.t, st) : state.pick ? state.pick.f.time : state.t) + st * MIN;
     if (state.loop && t > state.loop.end) t = state.loop.start;
     if (t > tLimits()[1]) return play(false);

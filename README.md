@@ -48,7 +48,7 @@ L'app è statica, quindi funziona anche da GitHub Pages
 | RainViewer | mosaico radar mondiale, 10 min | dove esistono radar (verificato con la loro mappa di copertura) | 2 h | – |
 | EUMETSAT H SAF H60B / H63 | satellite, ~4 km, 15 min | Europa, Africa / Asia, Oceano Indiano | da dic 2022 | – |
 | NASA GPM IMERG | satellite, ~10 km, 30 min | globale ±60° | dal 1998 (ritardo ~6 h) | – |
-| Open-Meteo (best match) | modelli numerici, orario | globale | ~3 mesi (analisi), dal 23/03/2021 (archivio delle previsioni), dal 1940 (rianalisi ERA5, ~25 km) | 16 giorni |
+| Open-Meteo (best match) | modelli numerici, 15 min dal 2021 (reali in Europa centrale, interpolati altrove), orario prima | globale | ~3 mesi (analisi), dal 23/03/2021 (archivio delle previsioni), dal 1940 (rianalisi ERA5, ~25 km) | 16 giorni |
 
 Nessun servizio gratuito offre radar *osservato* ovunque e per decenni: per il
 passato remoto l'app usa radar dove c'è archivio (USA), altrimenti stime da
@@ -78,7 +78,7 @@ una fonte specifica.
 Il menu **Dato** passa da pioggia a **vento** (velocità a 10 m in colore e particelle
 animate che seguono il flusso; frecce statiche se il sistema chiede di ridurre le animazioni) o **indice UV** (scala colori OMS, con bagliori animati più fitti e grandi dove l'UV è più alto) o **temperatura** a 2 m (colori e valori in °C sulla mappa). Questi dati
 esistono solo come modello (Open-Meteo), quindi in quelle modalità la fonte è
-sempre il modello, orario, dal 1940 (UV dal 2021) a +15 giorni. Sotto l'orario sono sempre indicati,
+sempre il modello, ogni 15 min dal 2021 (orario prima), dal 1940 (UV dal 2021) a +15 giorni. Sotto l'orario sono sempre indicati,
 per il centro della mappa, temperatura, pioggia, vento (con direzione e raffiche) e indice UV
 con la categoria di esposizione, il consiglio di protezione (al passaggio del
 mouse) e il picco UV del giorno.
