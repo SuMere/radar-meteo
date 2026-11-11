@@ -79,6 +79,7 @@ export class Rating {
       Object.assign(st, { ok: true, ms: r.ms, latest: r.latest, completeness: r.completeness ?? 1, error: null });
       st.reliab = 0.75 * st.reliab + 0.25;
     } catch (e) {
+      if (e.rateLimited) return; // in pausa per il limite di richieste: non è un guasto della fonte
       Object.assign(st, { ok: false, error: String(e.message || e) });
       st.reliab = 0.75 * st.reliab;
     }

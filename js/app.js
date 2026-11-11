@@ -10,6 +10,7 @@ const SLIDER_STEP = 5;               // minuti
 const PREFS_KEY = 'radar-meteo.prefs.v1';
 const $ = id => document.getElementById(id);
 const byId = Object.fromEntries(SOURCES.map(s => [s.id, s]));
+byId.openmeteo.fetch = omFetch; // la sonda rispetta la pausa dopo un 429
 
 // ------------------------------------------------------------------ preferenze
 const prefs = (() => {
@@ -343,7 +344,9 @@ class ModelGrid {
     const idx = Math.round((ft - d.t0) / HOUR) + cfg.offset;
     if (idx < 0 || idx >= d.len) return null;
     const arrows = v === 'wind' && !fieldAnim.enabled; // frecce statiche solo con "riduci movimento"
-    const key = `om:${d.id}:${v}:${idx}:${arrows ? 'a' : ''}`;
+    // _fits accetta la griglia su qualsiasi copia del mondo: l'immagine va spostata su quella visibile.
+    const k = d.wrap ? 0 : Math.round((map.getCenter().lng - (d.w + d.e) / 2) / 360) * 360;
+    const key = `om:${d.id}:${v}:${idx}:${arrows ? 'a' : ''}:${k}`;
     if (this.renders.has(key)) return this.renders.get(key);
     const main = gridSlice(d, cfg.params[0], idx);
     // Griglia globale: tre copie affiancate, così la mappa resta coperta anche oltre ±180°.
@@ -365,7 +368,7 @@ class ModelGrid {
     bctx.drawImage(small, 0, 0, big.width, big.height);
     if (arrows) for (let k = 0; k < copies; k++) drawWindArrows(bctx, d, idx, cell, k * d.nx * cell);
     const off = d.wrap ? 360 : 0;
-    const out = { key, idx, url: big.toDataURL('image/png'), bounds: L.latLngBounds([d.s, d.w - off], [d.n, d.e + off]) };
+    const out = { key, idx, url: big.toDataURL('image/png'), bounds: L.latLngBounds([d.s, d.w - off + k], [d.n, d.e + off + k]) };
     this.renders.set(key, out);
     return out;
   }
@@ -623,13 +626,20 @@ const state = {
 };
 const coverage = new Map(); // "id|lat|lon" → true/false/null
 
+const wrapLon = lon => ((lon % 360) + 540) % 360 - 180; // lo zoom e la tastiera non riportano il centro in ±180
+const coverageKey = (src, lat, lon) => `${src.id}|${Math.round(lat * 2) / 2}|${Math.round(wrapLon(lon) * 2) / 2}`;
 function coverageOf(src, lat, lon) {
+  lon = wrapLon(lon);
   if (!src.covers(lat, lon)) return false;
   if (!src.coverage) return true;
-  const key = `${src.id}|${Math.round(lat * 2) / 2}|${Math.round(lon * 2) / 2}`;
+  const key = coverageKey(src, lat, lon);
   if (coverage.has(key)) return coverage.get(key);
   coverage.set(key, null);
-  src.coverage(lat, lon).then(v => { coverage.set(key, v); scheduleUpdate(); });
+  src.coverage(lat, lon).then(v => {
+    if (v === null) setTimeout(() => coverage.delete(key), 30e3); // verifica fallita: si riprova
+    else coverage.set(key, v);
+    scheduleUpdate();
+  });
   return null;
 }
 
@@ -708,7 +718,7 @@ async function update() {
     renderSourceInfo();
   } else {
     frames.show(pick.f.key, () => pick.s.layer(pick.f));
-    setMapNote(pick.s.coverage && coverage.get(`${pick.s.id}|${Math.round(c.lat * 2) / 2}|${Math.round(c.lng * 2) / 2}`) === null
+    setMapNote(pick.s.coverage && coverage.get(coverageKey(pick.s, c.lat, c.lng)) === null
       ? 'Verifica copertura radar in corso…' : null);
     if (state.playing) preloadNext(pick);
   }
@@ -1021,7 +1031,7 @@ async function fetchPoint() {
       const vals = Array.isArray(body.hourly[p]) ? body.hourly[p] : [];
       series[p] = vals.map(v => (Number.isFinite(v) ? v : NaN));
     }
-    point = { lat: c.lat, lon: c.lng, h0, h1: h1 + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), series };
+    point = { lat: c.lat, lon: c.lng, h0, h1: floorTo(h1, 1440) + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), series };
   } catch (e) {
     if (seq !== pointSeq) return;
     if (!e.rateLimited) point = null; // con il limite raggiunto si tiene l'ultima serie: si riprova dopo la pausa
@@ -1428,7 +1438,7 @@ window.addEventListener('error', e => setMapNote('Errore: ' + e.message));
 window.addEventListener('unhandledrejection', e => setMapNote('Errore: ' + (e.reason?.message || e.reason)));
 function reanchor() {
   state.now = floorTo(Date.now(), SLIDER_STEP);
-  if (state.follow) state.center = state.now;
+  if (state.follow) { state.center = state.now; schedulePointFetch(); }
   updateGotoRange();
   if (state.live) state.t = latestObservation();
   scheduleUpdate();

@@ -11,6 +11,7 @@ Uso:  python3 serve.py [porta]                 solo questo computer (127.0.0.1:8
 import argparse
 import http.server
 import os
+import socket
 import threading
 import webbrowser
 
@@ -99,7 +100,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    httpd = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
+    cls = http.server.ThreadingHTTPServer
+    if ":" in args.host:  # indirizzo IPv6, es. "::"
+        cls = type("Server6", (cls,), {"address_family": socket.AF_INET6})
+    httpd = cls((args.host, args.port), Handler)
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
     url = f"http://{shown}:{args.port}/"
     print(f"Radar Meteo in esecuzione su http://{args.host}:{args.port}/  (Ctrl+C per uscire)", flush=True)

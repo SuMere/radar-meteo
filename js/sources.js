@@ -99,9 +99,9 @@ const rainviewer = {
           ctx.drawImage(img, 0, 0);
           const a = ctx.getImageData(Math.floor((x % 1) * 256), Math.floor((y % 1) * 256), 1, 1).data[3];
           resolve(a < 128);
-        } catch { resolve(null); }
+        } catch { this._cov.delete(key); resolve(null); }
       };
-      img.onerror = () => resolve(null);
+      img.onerror = () => { this._cov.delete(key); resolve(null); };
       img.src = `https://tilecache.rainviewer.com/v2/coverage/0/256/${z}/${Math.floor(x)}/${Math.floor(y)}/0/0_0.png`;
     });
     this._cov.set(key, p);
@@ -267,8 +267,9 @@ const openmeteo = {
   attribution: 'Modelli © <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0)',
   meta: {},
   covers: () => true,
+  fetch: safeFetch, // sostituita in app.js con quella soggetta al limite di richieste
   async probe() {
-    const { body, ms } = await safeFetch('https://api.open-meteo.com/v1/forecast?latitude=45.07&longitude=7.69&hourly=precipitation&forecast_days=1');
+    const { body, ms } = await this.fetch('https://api.open-meteo.com/v1/forecast?latitude=45.07&longitude=7.69&hourly=precipitation&forecast_days=1');
     if (!Array.isArray(body?.hourly?.precipitation)) throw new Error('Risposta inattesa');
     return { ms, latest: Date.now() };
   },
