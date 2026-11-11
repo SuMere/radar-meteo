@@ -39,6 +39,14 @@ L'app è statica, quindi funziona anche da GitHub Pages
 (Settings → Pages → Deploy from a branch → `main` / root):
 `https://sumere.github.io/radar-meteo/`. Su HTTPS funziona anche il pulsante 📍.
 
+### Sul telefono (app installabile)
+
+Da `https://sumere.github.io/radar-meteo/` usa **Aggiungi a schermata Home** (Safari) o
+**Installa app** (Chrome/Android): si apre a schermo intero come un'app. Non serve nessuno store
+e non viene installato codice nativo: è la stessa pagina web, con gli stessi permessi del browser.
+Offline si apre l'interfaccia, ma i dati meteo richiedono la rete. L'installazione funziona solo
+via HTTPS (o 127.0.0.1), non dal server in LAN via HTTP.
+
 ## Fonti
 
 | Fonte | Tipo | Copertura | Passato | Futuro |
@@ -128,5 +136,11 @@ viene caricata solo se il riquadro è aperto.
 - Tutte le richieste passano da un'allowlist di host, senza cookie
   (`credentials: omit`), con timeout e limite di dimensione; i dati ricevuti
   vengono validati e mai inseriti come HTML.
+- Il service worker (app installabile) gestisce solo l'elenco fisso dei file dell'app sulla
+  stessa origine: le risposte dei servizi meteo non passano da lì e non vengono salvate.
+  Carica prima dalla rete e solo offline dalla cache, così ogni aggiornamento (anche di
+  sicurezza) arriva subito ai telefoni. CSP: `manifest-src 'self'; worker-src 'self'`.
+- I parametri dei link condivisibili sono dati non fidati: numeri limitati, valori da un elenco
+  ammesso, il luogo è mostrato solo come testo. L'app rifiuta di girare dentro iframe altrui.
 - Nessun account, nessuna API key, nessun dato personale inviato (la posizione
   GPS è usata solo se premi 📍, e resta nel browser).

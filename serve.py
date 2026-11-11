@@ -23,9 +23,11 @@ ALLOWED = {
     "/vendor/leaflet/images/layers.png", "/vendor/leaflet/images/layers-2x.png",
     "/vendor/leaflet/images/marker-icon.png", "/vendor/leaflet/images/marker-icon-2x.png",
     "/vendor/leaflet/images/marker-shadow.png",
+    "/manifest.webmanifest", "/sw.js", "/icon.svg", "/icon-180.png", "/icon-192.png", "/icon-512.png",
 }
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-         ".js": "text/javascript; charset=utf-8", ".png": "image/png"}
+         ".js": "text/javascript; charset=utf-8", ".png": "image/png",
+         ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json"}
 
 def read_csp():
     with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as f:

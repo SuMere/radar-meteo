@@ -1574,6 +1574,10 @@ rating.onChange(() => {
   if (!$('ratings').hidden) renderRatings();
 });
 rating.start();
+// App installabile (solo in contesto sicuro: HTTPS o 127.0.0.1; in LAN via HTTP il browser lo nega).
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('offline', () => setMapNote('Sei offline: i dati meteo non sono disponibili.'));
+window.addEventListener('online', () => { setMapNote(null); scheduleUpdate(); schedulePointFetch(); });
 setInterval(reanchor, MIN);
 schedulePointFetch();
 timelineLegend();
