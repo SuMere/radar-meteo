@@ -43,6 +43,23 @@ const prefs = (() => {
 })();
 const savePrefs = () => store.set(PREFS_KEY, prefs);
 
+// Link condivisibile: #ll=lat,lon&z=zoom&l=dato&p=luogo&t=minuti UTC. Viene da fuori: solo numeri
+// limitati e valori ammessi, il luogo è mostrato solo come testo.
+const sharedTime = (() => {
+  try {
+    const q = new URLSearchParams(location.hash.slice(1));
+    const [lat, lon] = (q.get('ll') || '').split(',').map(Number);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) { prefs.lat = clamp(lat, -85, 85); prefs.lon = clamp(lon, -180, 180); }
+    const z = q.has('z') ? Number(q.get('z')) : NaN;
+    if (Number.isInteger(z)) prefs.zoom = clamp(z, 2, 14);
+    if (['precip', 'wind', 'uv', 'temp'].includes(q.get('l'))) prefs.layer = q.get('l');
+    if (q.get('p')) prefs.place = q.get('p').slice(0, 120);
+    const t = q.has('t') ? Number(q.get('t')) : NaN;
+    return Number.isInteger(t) ? t * MIN : null;
+  } catch { return null; }
+})();
+window.addEventListener('hashchange', () => location.reload()); // link incollato in una scheda già aperta
+
 // ------------------------------------------------------------------ mappa
 const map = L.map('map', { zoomControl: true, worldCopyJump: true, minZoom: 2 })
   .setView([prefs.lat, prefs.lon], prefs.zoom);
@@ -690,8 +707,21 @@ function scheduleUpdate() {
   requestAnimationFrame(() => { updateQueued = false; update(); });
 }
 
+let hashTimer = null;
+function writeHash(now = false) {
+  clearTimeout(hashTimer);
+  const write = () => {
+    const c = map.getCenter();
+    const q = new URLSearchParams({ ll: `${c.lat.toFixed(4)},${wrapLon(c.lng).toFixed(4)}`, z: map.getZoom(), l: prefs.layer, p: prefs.place });
+    if (!state.live) q.set('t', String(Math.round(state.t / MIN)));
+    try { history.replaceState(null, '', '#' + q); } catch { /* il browser limita la frequenza */ }
+  };
+  if (now) write(); else hashTimer = setTimeout(write, 500);
+}
+
 async function update() {
   const token = ++updateToken;
+  writeHash();
   if (!FIELD_LAYERS.has(prefs.layer)) fieldAnim.stop();
   const c = map.getCenter();
   // Vento e UV esistono solo come dato di modello.
@@ -1461,6 +1491,14 @@ function bindUI() {
   });
   document.addEventListener('click', e => { if (!e.target.closest('.search')) $('search-results').hidden = true; });
 
+  $('btn-share').addEventListener('click', async () => {
+    writeHash(true);
+    try {
+      if (navigator.share) await navigator.share({ title: 'Radar Meteo', url: location.href });
+      else { await navigator.clipboard.writeText(location.href); setMapNote('Link copiato negli appunti'); setTimeout(() => setMapNote(null), 2500); }
+    } catch { /* condivisione annullata o appunti non disponibili */ }
+  });
+
   $('btn-locate').addEventListener('click', () => {
     if (!navigator.geolocation) return setMapNote('Geolocalizzazione non disponibile');
     navigator.geolocation.getCurrentPosition(
@@ -1476,6 +1514,7 @@ function bindUI() {
   document.addEventListener('click', e => { if (!e.target.closest('#settings, #btn-menu')) setMenu(false); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
   $('btn-ratings').addEventListener('click', () => setMenu(false));
+  $('btn-share').addEventListener('click', () => setMenu(false));
 
   $('btn-ratings').addEventListener('click', () => {
     const p = $('ratings');
@@ -1523,6 +1562,7 @@ function reanchor() {
 }
 
 bindUI();
+if (sharedTime != null) setTime(sharedTime);
 $('place').textContent = prefs.place;
 rating.onChange(() => {
   if (state.live) state.t = latestObservation();

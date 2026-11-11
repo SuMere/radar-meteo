@@ -97,6 +97,10 @@ viene caricata solo se il riquadro è aperto.
 
 ## Comandi
 
+- **🔗 Condividi** (impostazioni): condivide o copia il link alla vista attuale. L'indirizzo
+  contiene luogo, zoom, dato e (se non sei su "Adesso") l'ora, quindi anche la barra degli
+  indirizzi è sempre un link valido. I valori del link vengono controllati e limitati
+
 - slider/timeline: trascina o clicca; la timeline mostra 30 giorni. Lo zoom va da 1 h a 30 g:
   valori pronti nel menu accanto ai pulsanti, oppure qualsiasi valore intermedio con la
   rotellina o il pinch sulla timeline (zoom attorno al puntatore) o con i tasti `+` / `−`;
