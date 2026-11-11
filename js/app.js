@@ -1202,10 +1202,32 @@ function renderRatings() {
       el('td', {}, hist),
     ));
   }
+  renderMatrix();
   const last = rating.lastRun;
   $('ratings-when').textContent = last
     ? `Ultima valutazione: ${fmtHM.format(last)} · prossima alle ${fmtHM.format(last + RATE_INTERVAL)}`
     : 'Valutazione in corso…';
+}
+
+// Tabella risoluzione × frequenza: ogni cella elenca le fonti con quella combinazione, un clic le forza.
+function setMode(id) {
+  prefs.mode = id; $('mode').value = id; savePrefs(); scheduleUpdate();
+  if (!$('ratings').hidden) renderRatings();
+}
+function renderMatrix() {
+  const steps = [...new Set(SOURCES.map(s => s.stepMin))].sort((x, y) => x - y);
+  const res = [...new Set(SOURCES.map(s => s.resKm))].sort((x, y) => x - y);
+  const c = map.getCenter();
+  const head = el('tr', {}, el('th', { text: 'km \\ ogni' }), ...steps.map(st => el('th', { text: st < 60 ? `${st} min` : `${st / 60} h` })));
+  const rows = res.map(km => el('tr', {}, el('th', { text: `${String(km).replace('.', ',')} km` }),
+    ...steps.map(st => el('td', {}, ...SOURCES.filter(s => s.resKm === km && s.stepMin === st).map(s => {
+      const cls = [prefs.mode === s.id && 'active', coverageOf(s, c.lat, c.lng) === false && 'nocov'].filter(Boolean).join(' ');
+      const b = el('button', { class: cls, title: `${s.name} · ${KIND_LABEL[s.kind]}`, text: s.short, onclick: () => setMode(s.id) });
+      b.style.borderLeftColor = s.color;
+      return b;
+    })))));
+  $('matrix').replaceChildren(el('thead', {}, head), el('tbody', {}, ...rows));
+  $('btn-auto').classList.toggle('active', prefs.mode === 'auto');
 }
 
 // ------------------------------------------------------------------ controlli tempo
@@ -1412,7 +1434,8 @@ function bindUI() {
   mode.append(el('option', { value: 'auto', text: 'Automatica (fonte migliore)' }));
   for (const s of SOURCES) mode.append(el('option', { value: s.id, text: s.short }));
   mode.value = prefs.mode;
-  mode.addEventListener('change', () => { prefs.mode = mode.value; savePrefs(); scheduleUpdate(); });
+  mode.addEventListener('change', () => setMode(mode.value));
+  $('btn-auto').addEventListener('click', () => setMode('auto'));
 
   const layer = $('layer');
   layer.value = prefs.layer;

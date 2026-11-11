@@ -268,7 +268,7 @@ export function omEndpoint(h0, now = Date.now()) {
 }
 const openmeteo = {
   id: 'openmeteo', name: 'Open-Meteo – modelli numerici (best match) e rianalisi ERA5, dal 1940 a +16 g', short: 'Modello Open-Meteo',
-  kind: 'model', color: '#94a3b8', resKm: 11, stepMin: 60, latencyMin: 0,
+  kind: 'model', color: '#94a3b8', resKm: 11, stepMin: 15, latencyMin: 0, // 15 min dal 2021, ERA5 orario (vedi frameAt)
   homepage: 'https://open-meteo.com/',
   attribution: 'Modelli © <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0)',
   meta: {},

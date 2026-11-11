@@ -70,7 +70,8 @@ ricalcola un punteggio 0–100:
 Per ogni istante viene mostrata la fonte con il punteggio migliore che ha dati
 per quell'istante e copre il centro della mappa (mirino). Il nowcast e le
 previsioni lontane sono penalizzati. Il pannello **★ Fonti** mostra i rating,
-lo storico delle sonde e permette di escludere fonti; il menu **Fonte** forza
+lo storico delle sonde, una tabella risoluzione × frequenza (un clic forza quella fonte)
+e permette di escludere fonti; il menu **Fonte** forza
 una fonte specifica.
 
 ## Vento, UV e temperatura

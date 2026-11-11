@@ -55,7 +55,12 @@
     <button id="btn-ratings-close" aria-label="Chiudi">✕</button>
   </div>
   <p id="ratings-when" class="muted small"></p>
-  <table>
+  <h3 class="small">Precisione e frequenza: scegli la fonte</h3>
+  <table id="matrix" class="matrix"></table>
+  <p class="muted small">Righe: risoluzione spaziale (più in alto = più dettaglio). Colonne: un dato ogni… (più a sinistra = più frequente).
+    Un clic forza quella fonte; sbiadite quelle che non coprono il centro. Il modello è orario prima del 2021.
+    <button id="btn-auto">Automatica</button></p>
+  <table class="list">
     <thead><tr><th></th><th>Fonte</th><th>Copre il centro</th><th>Rating</th><th>Affidab.</th><th>Risposta</th><th>Ultimo dato</th><th>Sonde</th></tr></thead>
     <tbody id="ratings-body"></tbody>
   </table>
