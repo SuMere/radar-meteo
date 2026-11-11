@@ -3,6 +3,12 @@ import { SOURCES, KIND_LABEL, OM_START, OM_HIST_START, omEnd, omEndpoint } from 
 import { Rating, RATE_INTERVAL } from './rating.js';
 import { safeFetch, store, el, clamp, floorTo, fmtAge, isoZ, MIN, HOUR, DAY } from './util.js';
 
+// GitHub Pages non può inviare frame-ancestors/X-Frame-Options (nel meta CSP è ignorato): niente iframe altrui.
+if (window.top !== window.self) {
+  document.body.replaceChildren(el('a', { href: location.href, target: '_blank', rel: 'noopener', text: 'Apri Radar Meteo' }));
+  throw new Error('Radar Meteo non può essere incorporato in un iframe');
+}
+
 const FUTURE_MIN = 15 * 1440;        // orizzonte delle previsioni, in minuti
 // Zoom della timeline: metà finestra in minuti. Preimpostati 1 h, 6 h, 1 g, 3 g, 7 g, 30 g;
 // rotellina, pinch e +/− danno qualsiasi valore fra il primo e l'ultimo.

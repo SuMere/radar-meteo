@@ -39,6 +39,7 @@ CSP = read_csp()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "RadarMeteo"
+    timeout = 10  # chiude le connessioni inattive (slowloris in LAN)
     sys_version = ""
 
     def _send(self, head_only):

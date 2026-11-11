@@ -25,7 +25,8 @@ python3 serve.py --host 0.0.0.0 --port 8765 --no-browser
 
 Poi apri `http://<ip-del-server>:8765/` da qualsiasi dispositivo della rete.
 Il server serve solo file statici in lettura; non esporlo su Internet senza un
-reverse proxy HTTPS. Via HTTP in LAN il pulsante 📍 non funziona (i browser
+reverse proxy HTTPS. In HTTP chi è sulla stessa rete può alterare le pagine in transito:
+usalo solo su una LAN fidata (altrimenti la versione HTTPS su GitHub Pages). Via HTTP in LAN il pulsante 📍 non funziona (i browser
 concedono la geolocalizzazione solo su HTTPS o 127.0.0.1): usa la ricerca.
 
 Sul UDOO lo script `udoo-setup.sh` (voce **R**) clona il repository in
