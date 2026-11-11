@@ -95,13 +95,16 @@ viene caricata solo se il riquadro è aperto.
 
 ## Comandi
 
-- slider/timeline: trascina o clicca; la timeline mostra 30 giorni, la disponibilità di
+- slider/timeline: trascina o clicca; la timeline mostra 30 giorni (zoom a 7 g, 3 g, 1 g o 6 h
+  dal menu accanto ai pulsanti o con la rotellina sulla timeline; le tacche passano da giorni
+  a ore e quarti d'ora), la disponibilità di
   ogni fonte e la pioggia oraria prevista/stimata al centro della mappa. Andando oltre
   i bordi (con −1g, −30g, le frecce, la riproduzione o **Vai a**) la finestra si sposta;
   lontano da oggi in alto a destra compaiono mese e anno
 - **Vai a**: scegli data e ora precise (ora locale, dal 1940 a +15 giorni) e premi
   **Vai** o `Invio`; **⇤** porta al dato più vecchio (1° gennaio 1940)
 - **−30g** / **+30g** (solo su schermi larghi): salta di un mese
+- velocità dell'animazione: menu accanto allo zoom (solo su schermi larghi)
 - `←` `→` frame precedente/successivo, `Maiusc+←/→` ±1 ora, `spazio` play/pausa
 - **⟲ 2h**: animazione in loop delle ultime 2 ore · **● Adesso**: segue l'ultimo dato in tempo reale
 

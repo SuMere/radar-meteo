@@ -81,14 +81,17 @@
       <button id="btn-month-fwd" class="wide-only" title="+30 giorni">+30g</button>
       <button id="btn-loop" title="Animazione delle ultime 2 ore in loop">⟲ 2h</button>
       <button id="btn-live" title="Vai all'ultimo dato osservato e seguilo">● Adesso</button>
-      <select id="speed" title="Velocità animazione">
+      <select id="zoom" title="Zoom della timeline (anche con la rotellina sulla timeline)" aria-label="Zoom della timeline">
+        <option value="180">6 h</option><option value="720">1 g</option><option value="2160">3 g</option><option value="5040">7 g</option><option value="21600">30 g</option>
+      </select>
+      <select id="speed" class="wide-only" title="Velocità animazione">
         <option value="1000">lenta</option><option value="500" selected>normale</option><option value="250">veloce</option>
       </select>
     </div>
   </div>
   <div id="source-info" class="source-info"></div>
   <canvas id="timeline" class="timeline" aria-hidden="true"></canvas>
-  <input id="slider" type="range" class="slider" aria-label="Istante visualizzato (finestra di 30 giorni)">
+  <input id="slider" type="range" class="slider" aria-label="Istante visualizzato nella finestra della timeline">
   <div id="tl-legend" class="tl-legend muted small"></div>
 </footer>
 </body>

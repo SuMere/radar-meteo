@@ -3,7 +3,9 @@ import { SOURCES, KIND_LABEL, OM_START, OM_HIST_START, omEnd, omEndpoint } from 
 import { Rating, RATE_INTERVAL } from './rating.js';
 import { safeFetch, store, el, clamp, floorTo, fmtAge, isoZ, MIN, HOUR, DAY } from './util.js';
 
-const RANGE_MIN = 15 * 1440;         // la timeline mostra ±15 giorni attorno al suo centro, in minuti
+const FUTURE_MIN = 15 * 1440;        // orizzonte delle previsioni, in minuti
+// Zoom della timeline: metà finestra in minuti (6 h, 1 g, 3 g, 7 g, 30 g).
+const SPANS = [3 * 60, 12 * 60, 36 * 60, 84 * 60, 15 * 1440];
 const SLIDER_STEP = 5;               // minuti
 const PREFS_KEY = 'radar-meteo.prefs.v1';
 const $ = id => document.getElementById(id);
@@ -22,6 +24,7 @@ const prefs = (() => {
     basemap: ['dark', 'osm'].includes(p.basemap) ? p.basemap : 'light',
     layer: ['wind', 'uv', 'temp'].includes(p.layer) ? p.layer : 'precip',
     mode: typeof p.mode === 'string' && (p.mode === 'auto' || byId[p.mode]) ? p.mode : 'auto',
+    span: SPANS.includes(p.span) ? p.span : SPANS[SPANS.length - 1],
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
     // Riepilogo previsioni aperto (chiuso di default sui telefoni).
     recap: typeof p.recap === 'boolean' ? p.recap : !window.matchMedia('(max-width: 700px), (max-height: 500px)').matches,
@@ -609,7 +612,7 @@ const rating = new Rating(SOURCES);
 const disabled = new Set(prefs.disabled);
 const state = {
   now: floorTo(Date.now(), SLIDER_STEP), // adesso, aggiornato ogni minuto
-  center: floorTo(Date.now(), SLIDER_STEP), // centro della timeline (±15 giorni)
+  center: floorTo(Date.now(), SLIDER_STEP), // centro della timeline (± prefs.span)
   follow: true, // la timeline segue l'ora attuale
   t: Date.now(),
   live: true,
@@ -1037,8 +1040,8 @@ function pointValueAt(t, param) {
 const tlCanvas = $('timeline');
 // Finestra visibile della timeline e limiti assoluti: dal dato più vecchio
 // (rianalisi ERA5, 1940) a +15 giorni.
-function tRange() { return [state.center - RANGE_MIN * MIN, state.center + RANGE_MIN * MIN]; }
-function tLimits() { return [OM_START, state.now + RANGE_MIN * MIN]; }
+function tRange() { return [state.center - prefs.span * MIN, state.center + prefs.span * MIN]; }
+function tLimits() { return [OM_START, state.now + FUTURE_MIN * MIN]; }
 const THUMB = 8; // metà larghezza del cursore dello slider: allinea canvas e slider
 function xOf(t, w) { const [a, b] = tRange(); return THUMB + (t - a) / (b - a) * (w - 2 * THUMB); }
 function tOf(x, w) { const [a, b] = tRange(); return a + clamp((x - THUMB) / (w - 2 * THUMB), 0, 1) * (b - a); }
@@ -1055,18 +1058,25 @@ function drawTimeline() {
   const fg = css.getPropertyValue('--fg-muted').trim() || '#888';
   const [a, b] = tRange();
 
-  // Giorni
+  // Tacche: ore o giorni secondo lo zoom, etichette distanziate almeno ~44 px.
   ctx.font = '10px system-ui, sans-serif';
-  ctx.fillStyle = fg; ctx.strokeStyle = fg; ctx.globalAlpha = 0.35;
-  const dayStep = w < 600 ? 3 : w < 1000 ? 2 : 1;
-  const firstDay = new Date(a); firstDay.setHours(0, 0, 0, 0);
-  for (let k = 0, day = firstDay; day.getTime() <= b; day.setDate(day.getDate() + 1)) {
-    const d = day.getTime();
-    if (d < a) continue;
-    k++;
-    const x = xOf(d, w);
+  ctx.fillStyle = fg; ctx.strokeStyle = fg;
+  const pxM = (w - 2 * THUMB) / ((b - a) / MIN);
+  const lab = [15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 10080].find(st => st * pxM >= 44) ?? 10080;
+  const tick = Math.min(lab, 1440);
+  const d = new Date(a); d.setHours(0, tick < 1440 ? Math.floor((d.getHours() * 60 + d.getMinutes()) / tick) * tick : 0, 0, 0);
+  for (let k = 0; d.getTime() <= b; d.setMinutes(d.getMinutes() + tick)) {
+    const t = d.getTime(), m = d.getHours() * 60 + d.getMinutes();
+    if (t < a) continue;
+    const midnight = m === 0;
+    if (midnight) k++;
+    const x = xOf(t, w);
+    ctx.globalAlpha = midnight ? 0.35 : 0.15;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-    if (k % dayStep === 0) { ctx.globalAlpha = 0.8; ctx.fillText(fmtDay.format(d), x + 2, h - 2); ctx.globalAlpha = 0.35; }
+    if (lab < 1440 ? m % lab === 0 : midnight && k % (lab / 1440) === 0) {
+      ctx.globalAlpha = 0.8;
+      ctx.fillText(midnight ? fmtDay.format(t) : fmtHM.format(t), x + 2, h - 2);
+    }
   }
   ctx.globalAlpha = 1;
   // Lontano da oggi: mese e anno della finestra, in alto a destra.
@@ -1184,14 +1194,24 @@ function setTime(t, { live = false } = {}) {
   state.live = live;
   scheduleUpdate();
 }
-// Sposta la finestra della timeline (non oltre l'ora attuale, così il futuro resta visibile per intero).
+// Sposta la finestra della timeline senza uscire dai limiti (a 30 g: centro mai oltre adesso, futuro visibile per intero).
 function setCenter(c) {
-  c = clamp(floorTo(c, SLIDER_STEP), tLimits()[0] + RANGE_MIN * MIN, state.now);
+  const [lo, hi] = tLimits();
+  c = clamp(floorTo(c, SLIDER_STEP), lo + prefs.span * MIN, Math.max(state.now, hi - prefs.span * MIN));
   state.follow = c === state.now;
   if (c === state.center) return;
   state.center = c;
   schedulePointFetch();
   timelineLegend();
+}
+
+// Cambia lo zoom della timeline tenendo nella finestra l'istante mostrato.
+function setZoom(span) {
+  prefs.span = span; savePrefs();
+  $('zoom').value = String(span);
+  $('slider').min = String(-span); $('slider').max = String(span);
+  setCenter(state.live ? state.now : state.t);
+  schedulePointFetch(); timelineLegend(); scheduleUpdate();
 }
 
 function latestObservation() {
@@ -1274,7 +1294,17 @@ function goTo(lat, lon, label, zoom) {
 // ------------------------------------------------------------------ eventi UI
 function bindUI() {
   const slider = $('slider');
-  slider.min = String(-RANGE_MIN); slider.max = String(RANGE_MIN); slider.step = String(SLIDER_STEP);
+  slider.step = String(SLIDER_STEP);
+  setZoom(prefs.span);
+  $('zoom').addEventListener('change', e => setZoom(Number(e.target.value)));
+  let wheelAt = 0;
+  tlCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.timeStamp - wheelAt < 300) return; // i trackpad mandano raffiche di eventi: un livello per gesto
+    wheelAt = e.timeStamp;
+    const i = SPANS.indexOf(prefs.span) + Math.sign(e.deltaY);
+    if (SPANS[i]) setZoom(SPANS[i]);
+  }, { passive: false });
   slider.addEventListener('input', () => { stopLoop(); setTime(state.center + Number(slider.value) * MIN); });
 
   let dragging = false;
