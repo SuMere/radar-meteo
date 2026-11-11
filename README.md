@@ -92,6 +92,14 @@ per il centro della mappa, temperatura, pioggia, vento (con direzione e raffiche
 con la categoria di esposizione, il consiglio di protezione (al passaggio del
 mouse) e il picco UV del giorno.
 
+## Pioggia in arrivo
+
+Accanto alle condizioni al centro compare un avviso quando il modello (dati a 15 minuti) prevede
+pioggia nelle prossime 3 ore, o quando smetterà. **🔔 Avvisi pioggia** (impostazioni) chiede il
+permesso del browser solo al clic e manda una notifica locale quando la pioggia è prevista entro
+30 minuti. Non c'è nessun server push: funziona solo con l'app aperta (anche in secondo piano,
+dove il browser lo permette). Su iPhone le notifiche richiedono l'app aggiunta alla schermata Home.
+
 ## Riepilogo previsioni
 
 In alto a destra sulla mappa c'è un riquadro **Previsioni**, che si apre e si chiude

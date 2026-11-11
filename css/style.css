@@ -102,6 +102,7 @@ body.dark .goto input { color-scheme: dark; }
 .ratings td.center { text-align: center; }
 .ratings tr.nocov { opacity: .5; }
 .ratings h3 { margin: 10px 0 4px; }
+.badge.rain { background: #1d4ed8; color: #fff; border-color: #1d4ed8; margin-left: 4px; }
 .matrix { display: block; overflow-x: auto; } /* su telefono la tabella scorre invece di tagliare colonne */
 .matrix th:first-child { white-space: nowrap; }
 .matrix td { text-align: center; }

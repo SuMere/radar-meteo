@@ -38,6 +38,7 @@ const prefs = (() => {
     step: STEPS.includes(p.step) ? p.step : 0,
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
     // Riepilogo previsioni aperto (chiuso di default sui telefoni).
+    notify: p.notify === true, // avvisi di pioggia (il permesso del browser si chiede solo al clic)
     recap: typeof p.recap === 'boolean' ? p.recap : !window.matchMedia('(max-width: 700px), (max-height: 500px)').matches,
   };
 })();
@@ -861,6 +862,8 @@ function renderConditions(box, p) {
   const cond = el('span', { class: 'cond' });
   box.append(cond);
   if (parts.length) cond.append(el('span', { class: 'muted', text: ' · al centro (modello): ' + parts.join(' · ') }));
+  const o = Math.abs(state.t - Date.now()) < 3 * HOUR ? rainOutlook() : null;
+  if (o) cond.append(el('span', { class: 'badge rain', text: rainText(o), title: 'Previsione del modello a 15 minuti al centro della mappa (soglia 0,2 mm/h)' }));
   const uv = pointValueAt(state.t, 'uv_index');
   if (uv == null) return;
   const cat = uvCategory(uv), max = uvDayMax(state.t);
@@ -870,6 +873,38 @@ function renderConditions(box, p) {
   badge.style.background = `rgb(${col[0]},${col[1]},${col[2]})`;
   badge.style.color = uv >= 8 || uv < 3 ? '#fff' : '#111';
   cond.append(badge, el('span', { class: 'muted', text: maxTxt }));
+}
+
+// Pioggia in arrivo (o che smette) al centro nelle prossime 3 h, dalla serie del modello a 15 min.
+const RAIN_ON = 0.2, RAIN_OFF = 0.1; // mm/h, con isteresi per non oscillare
+function rainOutlook(now = Date.now()) {
+  if (!point || point.dt > 15 * MIN) return null;
+  const cur = pointValueAt(now, 'precipitation');
+  if (cur == null) return null;
+  const raining = cur >= RAIN_ON;
+  for (let t = floorTo(now, 15) + 15 * MIN; t <= now + 3 * HOUR; t += 15 * MIN) {
+    const v = pointValueAt(t, 'precipitation');
+    if (v == null) return null;
+    if (raining ? v < RAIN_OFF : v >= RAIN_ON) return { raining, at: t, v };
+  }
+  return raining ? { raining, at: null, v: cur } : null;
+}
+function rainText(o) {
+  if (o.raining) return o.at ? `🌧 piove, smette verso le ${fmtHM.format(o.at)}` : '🌧 piove per le prossime 3 h';
+  return `🌧 pioggia verso le ${fmtHM.format(o.at)} (tra ~${fmtAge(o.at - Date.now())}, ${o.v.toFixed(1)} mm/h)`;
+}
+// Notifica locale (nessun server push) quando la pioggia è prevista entro 30 min; una sola per evento.
+let notifiedAt = null;
+async function checkRainNotify() {
+  if (!prefs.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const o = rainOutlook();
+  if (!o || o.raining || o.at - Date.now() > 30 * MIN || o.at === notifiedAt) return;
+  notifiedAt = o.at;
+  const opts = { body: `${rainText(o)} al centro della mappa (previsione del modello)`, icon: 'icon-192.png', tag: 'rain' };
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) await reg.showNotification('Radar Meteo', opts); else new Notification('Radar Meteo', opts);
+  } catch { /* notifiche non disponibili in questo contesto */ }
 }
 
 function uvDayMax(t) {
@@ -1063,7 +1098,7 @@ function schedulePointFetch() {
 async function fetchPoint() {
   const c = map.getCenter(), [a, b] = tRange();
   const h0 = Math.max(OM_START, floorTo(a, 1440) - DAY), h1 = Math.min(omEnd(), floorTo(b, 1440) + DAY);
-  if (point && map.distance([point.lat, point.lon], c) < 5000 && point.h0 <= Math.max(OM_START, a - HOUR) && point.h1 >= Math.min(omEnd(), b)) return;
+  if (point && Date.now() - point.at < 30 * MIN && map.distance([point.lat, point.lon], c) < 5000 && point.h0 <= Math.max(OM_START, a - HOUR) && point.h1 >= Math.min(omEnd(), b)) return;
   const lat = c.lat.toFixed(3), lon = (((c.lng + 540) % 360) - 180).toFixed(3);
   const ep = omEndpoint(h0), day = x => isoZ(x).slice(0, 10), seq = ++pointSeq;
   const q15 = ep.kind !== 'era5', block = q15 ? 'minutely_15' : 'hourly'; // come la griglia: 15 min dove esiste
@@ -1079,7 +1114,8 @@ async function fetchPoint() {
       // pioggia a 15 min: mm per quarto d'ora → mm/h, come nella serie oraria
       series[p] = vals.map(v => (Number.isFinite(v) ? (q15 && p === 'precipitation' ? v * 4 : v) : NaN));
     }
-    point = { lat: c.lat, lon: c.lng, h0, h1: floorTo(h1, 1440) + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), dt: q15 ? 15 * MIN : HOUR, series };
+    point = { lat: c.lat, lon: c.lng, h0, h1: floorTo(h1, 1440) + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), dt: q15 ? 15 * MIN : HOUR, at: Date.now(), series };
+    checkRainNotify();
   } catch (e) {
     if (seq !== pointSeq) return;
     if (!e.rateLimited) point = null; // con il limite raggiunto si tiene l'ultima serie: si riprova dopo la pausa
@@ -1502,6 +1538,16 @@ function bindUI() {
     } catch { /* condivisione annullata o appunti non disponibili */ }
   });
 
+  const bell = $('btn-notify');
+  bell.classList.toggle('active', prefs.notify);
+  bell.addEventListener('click', async () => {
+    if (prefs.notify) { prefs.notify = false; }
+    else if (!('Notification' in window)) { setMapNote('Notifiche non supportate da questo browser'); return; }
+    else if (await Notification.requestPermission() === 'granted') { prefs.notify = true; notifiedAt = null; checkRainNotify(); }
+    else { setMapNote('Notifiche bloccate: abilitale nelle impostazioni del browser'); return; }
+    savePrefs(); bell.classList.toggle('active', prefs.notify);
+  });
+
   $('btn-locate').addEventListener('click', () => {
     if (!navigator.geolocation) return setMapNote('Geolocalizzazione non disponibile');
     navigator.geolocation.getCurrentPosition(
@@ -1518,6 +1564,7 @@ function bindUI() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
   $('btn-ratings').addEventListener('click', () => setMenu(false));
   $('btn-share').addEventListener('click', () => setMenu(false));
+  $('btn-notify').addEventListener('click', () => setMenu(false));
 
   $('btn-ratings').addEventListener('click', () => {
     const p = $('ratings');
@@ -1562,6 +1609,7 @@ function reanchor() {
   updateGotoRange();
   if (state.live) state.t = latestObservation();
   scheduleUpdate();
+  checkRainNotify();
 }
 
 bindUI();
