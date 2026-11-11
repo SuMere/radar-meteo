@@ -134,14 +134,20 @@ const dwd = {
     if (!m.end) return null;
     const ft = snap(t, 5);
     if (ft < m.start || ft > m.end) return null;
-    return { key: 'dwd:' + ft, time: ft, nowcast: m.reference ? ft > m.reference : false };
+    // Il nowcast dipende dalla corsa: senza DIM_REFERENCE_TIME il server usa l'ultima, che cambia ogni 5 min.
+    const nc = m.reference ? ft > m.reference : false;
+    return { key: 'dwd:' + ft + (nc ? ':' + m.reference : ''), time: ft, nowcast: nc, ref: nc ? m.reference : null };
   },
   qualityAt(t, frame) {
     if (!frame?.nowcast) return 1;
     const leadH = (frame.time - this.meta.reference) / HOUR;
     return Math.max(0.55, 0.85 - 0.15 * leadH); // nowcast: affidabilità decrescente
   },
-  layer(frame) { return wmsLayer(DWD_WMS, 'dwd:Niederschlagsradar', frame.time, this.attribution); },
+  layer(frame) {
+    const l = wmsLayer(DWD_WMS, 'dwd:Niederschlagsradar', frame.time, this.attribution);
+    if (frame.ref) l.setParams({ DIM_REFERENCE_TIME: isoZ(frame.ref, true) }, true);
+    return l;
+  },
 };
 
 // ---------------------------------------------------------------- NOAA NEXRAD via IEM
