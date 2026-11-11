@@ -879,7 +879,7 @@ function uvDayMax(t) {
   const d1 = new Date(d0); d1.setDate(d1.getDate() + 1);
   let best = null;
   for (let i = 0; i < ser.length; i++) {
-    const ti = point.t0 + i * HOUR;
+    const ti = point.t0 + i * point.dt;
     if (ti >= d0.getTime() && ti < d1.getTime() && Number.isFinite(ser[i]) && (!best || ser[i] > best.v)) best = { v: ser[i], t: ti };
   }
   return best;
@@ -935,13 +935,14 @@ function pointDays(from, n) {
   const ser = point.series, days = [];
   for (let d0 = dayStart(from), k = 0; k < n; k++, d0 = nextDay(d0)) {
     const d1 = nextDay(d0), day = { t: d0, min: Infinity, max: -Infinity, rain: 0, wind: 0, uv: 0, code: -1, hours: 0 };
-    for (let i = Math.ceil((d0 - point.t0) / HOUR); point.t0 + i * HOUR < d1; i++) {
+    const hPer = point.dt / HOUR; // ore per campione (1 o 0,25)
+    for (let i = Math.ceil((d0 - point.t0) / point.dt); point.t0 + i * point.dt < d1; i++) {
       const tp = ser.temperature_2m[i];
       if (!Number.isFinite(tp)) continue;
-      day.hours++;
+      day.hours += hPer;
       day.min = Math.min(day.min, tp); day.max = Math.max(day.max, tp);
-      // la precipitazione all'ora i è la somma dell'ora precedente
-      if (Number.isFinite(ser.precipitation[i + 1])) day.rain += ser.precipitation[i + 1];
+      // la precipitazione al campione i (in mm/h) è quella del passo precedente
+      if (Number.isFinite(ser.precipitation[i + 1])) day.rain += ser.precipitation[i + 1] * hPer;
       if (Number.isFinite(ser.wind_speed_10m[i])) day.wind = Math.max(day.wind, ser.wind_speed_10m[i]);
       if (Number.isFinite(ser.uv_index[i])) day.uv = Math.max(day.uv, ser.uv_index[i]);
       if (Number.isFinite(ser.weather_code?.[i])) day.code = Math.max(day.code, ser.weather_code[i]);
@@ -965,7 +966,7 @@ recapCtl.addTo(map);
 function scheduleRecapGrid() {
   clearTimeout(recapGridTimer);
   recapGridTimer = setTimeout(async () => {
-    const key = `${map.getBounds().toBBoxString()}|${floorTo(state.t, 60)}`;
+    const key = `${map.getBounds().toBBoxString()}|${floorTo(state.t, 15)}`;
     if (key === recapGridFail) return;
     try { await modelGrid.ensure(state.t, () => false); } catch { recapGridFail = key; }
     recapKey = '';
@@ -986,7 +987,7 @@ function rangeChip(r, label) {
 
 function renderRecap() {
   if (!recapBox) return;
-  const b = map.getBounds(), z = map.getZoom(), h = floorTo(state.t, 60), d0 = dayStart(state.t);
+  const b = map.getBounds(), z = map.getZoom(), h = floorTo(state.t, 15), d0 = dayStart(state.t);
   const grid = modelGrid.cache.find(g => modelGrid._fits(g, b, z, state.t));
   const key = [grid?.id, b.toBBoxString(), h, point?.t0, point?.lat, point?.lon, prefs.recap].join('|');
   if (key === recapKey) return;
@@ -1052,7 +1053,7 @@ function renderRecap() {
 
 // ------------------------------------------------------------------ serie puntuale + timeline
 const POINT_PARAMS = ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m', 'uv_index', 'weather_code'];
-let point = null; // { lat, lon, h0, h1, t0, series: { param: valori orari } }
+let point = null; // { lat, lon, h0, h1, t0, dt, series: { param: valori ogni dt (15 min o 1 h) } }
 let pointTimer = null, pointSeq = 0;
 function schedulePointFetch() {
   clearTimeout(pointTimer);
@@ -1065,18 +1066,20 @@ async function fetchPoint() {
   if (point && map.distance([point.lat, point.lon], c) < 5000 && point.h0 <= Math.max(OM_START, a - HOUR) && point.h1 >= Math.min(omEnd(), b)) return;
   const lat = c.lat.toFixed(3), lon = (((c.lng + 540) % 360) - 180).toFixed(3);
   const ep = omEndpoint(h0), day = x => isoZ(x).slice(0, 10), seq = ++pointSeq;
+  const q15 = ep.kind !== 'era5', block = q15 ? 'minutely_15' : 'hourly'; // come la griglia: 15 min dove esiste
   try {
     const { body } = await omFetch(`${ep.url}?latitude=${lat}&longitude=${lon}` +
-      `&hourly=${POINT_PARAMS.join(',')}&start_date=${day(h0)}&end_date=${day(h1)}&timezone=GMT${ep.models ? '&models=best_match' : ''}`);
+      `&${block}=${POINT_PARAMS.join(',')}&start_date=${day(h0)}&end_date=${day(h1)}&timezone=GMT${ep.models ? '&models=best_match' : ''}`);
     if (seq !== pointSeq) return; // nel frattempo è partita una richiesta per un'altra finestra o luogo
-    const times = body?.hourly?.time;
-    if (!Array.isArray(times) || !Array.isArray(body.hourly.precipitation)) throw new Error('dati mancanti');
+    const times = body?.[block]?.time;
+    if (!Array.isArray(times) || !Array.isArray(body[block].precipitation)) throw new Error('dati mancanti');
     const series = {};
     for (const p of POINT_PARAMS) {
-      const vals = Array.isArray(body.hourly[p]) ? body.hourly[p] : [];
-      series[p] = vals.map(v => (Number.isFinite(v) ? v : NaN));
+      const vals = Array.isArray(body[block][p]) ? body[block][p] : [];
+      // pioggia a 15 min: mm per quarto d'ora → mm/h, come nella serie oraria
+      series[p] = vals.map(v => (Number.isFinite(v) ? (q15 && p === 'precipitation' ? v * 4 : v) : NaN));
     }
-    point = { lat: c.lat, lon: c.lng, h0, h1: floorTo(h1, 1440) + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), series };
+    point = { lat: c.lat, lon: c.lng, h0, h1: floorTo(h1, 1440) + DAY - HOUR, t0: Date.parse(times[0] + 'Z'), dt: q15 ? 15 * MIN : HOUR, series };
   } catch (e) {
     if (seq !== pointSeq) return;
     if (!e.rateLimited) point = null; // con il limite raggiunto si tiene l'ultima serie: si riprova dopo la pausa
@@ -1087,7 +1090,7 @@ async function fetchPoint() {
 // Precipitazione: somma dell'ora successiva a t; le altre variabili: valore istantaneo all'ora di t.
 function pointValueAt(t, param) {
   if (!point) return null;
-  const i = Math.round((floorTo(t, 60) - point.t0) / HOUR) + (param === 'precipitation' ? 1 : 0);
+  const i = Math.round((floorTo(t, point.dt / MIN) - point.t0) / point.dt) + (param === 'precipitation' ? 1 : 0);
   const v = point.series[param]?.[i];
   return Number.isFinite(v) ? v : null;
 }
@@ -1149,8 +1152,8 @@ function drawTimeline() {
     for (let i = cfg.offset; i < ser.length; i++) {
       const v = ser[i];
       if (!(v > cfg.min)) continue;
-      const t1 = point.t0 + (i - cfg.offset) * HOUR;
-      const x = xOf(t1, w), x2 = xOf(t1 + HOUR, w);
+      const t1 = point.t0 + (i - cfg.offset) * point.dt;
+      const x = xOf(t1, w), x2 = xOf(t1 + point.dt, w);
       const hh = Math.max(1, cfg.bar(v) * barMax);
       const c = cfg.color(Math.max(v, cfg.stops[0][0]));
       ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.9)`;
