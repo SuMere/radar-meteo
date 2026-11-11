@@ -4,8 +4,11 @@ import { Rating, RATE_INTERVAL } from './rating.js';
 import { safeFetch, store, el, clamp, floorTo, fmtAge, isoZ, MIN, HOUR, DAY } from './util.js';
 
 const FUTURE_MIN = 15 * 1440;        // orizzonte delle previsioni, in minuti
-// Zoom della timeline: metà finestra in minuti (6 h, 1 g, 3 g, 7 g, 30 g).
-const SPANS = [3 * 60, 12 * 60, 36 * 60, 84 * 60, 15 * 1440];
+// Zoom della timeline: metà finestra in minuti. Preimpostati 1 h, 6 h, 1 g, 3 g, 7 g, 30 g;
+// rotellina, pinch e +/− danno qualsiasi valore fra il primo e l'ultimo.
+const SPANS = [30, 3 * 60, 12 * 60, 36 * 60, 84 * 60, 15 * 1440];
+// Passo di «, », frecce e riproduzione, in minuti (0 = quello della fonte mostrata).
+const STEPS = [0, 5, 10, 15, 30, 60, 180, 360, 1440];
 const SLIDER_STEP = 5;               // minuti
 const PREFS_KEY = 'radar-meteo.prefs.v1';
 const $ = id => document.getElementById(id);
@@ -25,7 +28,8 @@ const prefs = (() => {
     basemap: ['dark', 'osm'].includes(p.basemap) ? p.basemap : 'light',
     layer: ['wind', 'uv', 'temp'].includes(p.layer) ? p.layer : 'precip',
     mode: typeof p.mode === 'string' && (p.mode === 'auto' || byId[p.mode]) ? p.mode : 'auto',
-    span: SPANS.includes(p.span) ? p.span : SPANS[SPANS.length - 1],
+    span: Math.round(clamp(num(p.span, SPANS.at(-1)), SPANS[0], SPANS.at(-1))),
+    step: STEPS.includes(p.step) ? p.step : 0,
     disabled: Array.isArray(p.disabled) ? p.disabled.filter(id => byId[id]) : [],
     // Riepilogo previsioni aperto (chiuso di default sui telefoni).
     recap: typeof p.recap === 'boolean' ? p.recap : !window.matchMedia('(max-width: 700px), (max-height: 500px)').matches,
@@ -725,7 +729,7 @@ async function update() {
 }
 
 function preloadNext(pick) {
-  const next = pick.s.frameAt(state.t + pick.s.stepMin * MIN);
+  const next = pick.s.frameAt(state.t + (prefs.step || pick.s.stepMin) * MIN);
   if (next && next.key !== pick.f.key && pick.s.layer) frames.preload(next.key, () => pick.s.layer(next));
 }
 
@@ -1072,7 +1076,7 @@ function drawTimeline() {
   ctx.font = '10px system-ui, sans-serif';
   ctx.fillStyle = fg; ctx.strokeStyle = fg;
   const pxM = (w - 2 * THUMB) / ((b - a) / MIN);
-  const lab = [15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 10080].find(st => st * pxM >= 44) ?? 10080;
+  const lab = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 10080].find(st => st * pxM >= 44) ?? 10080;
   const tick = Math.min(lab, 1440);
   const d = new Date(a); d.setHours(0, tick < 1440 ? Math.floor((d.getHours() * 60 + d.getMinutes()) / tick) * tick : 0, 0, 0);
   for (let k = 0; d.getTime() <= b; d.setMinutes(d.getMinutes() + tick)) {
@@ -1215,14 +1219,31 @@ function setCenter(c) {
   timelineLegend();
 }
 
-// Cambia lo zoom della timeline tenendo nella finestra l'istante mostrato.
-function setZoom(span) {
+// Cambia lo zoom della timeline: con x (px sulla timeline) l'istante sotto il puntatore resta fermo,
+// altrimenti la finestra si centra sull'istante mostrato.
+function setZoom(span, x) {
+  span = Math.round(clamp(span, SPANS[0], SPANS.at(-1)));
+  let c = state.live ? state.now : state.t;
+  if (x != null) {
+    const w = tlCanvas.clientWidth, f = clamp((x - THUMB) / (w - 2 * THUMB), 0, 1);
+    c = tOf(x, w) - (2 * f - 1) * span * MIN;
+  }
   prefs.span = span; savePrefs();
-  $('zoom').value = String(span);
+  const sel = $('zoom'), custom = sel.querySelector('option[data-custom]');
+  if (SPANS.includes(span)) { custom?.remove(); sel.value = String(span); }
+  else {
+    const o = custom || sel.appendChild(el('option', { 'data-custom': '' }));
+    const m = 2 * span;
+    o.value = String(span);
+    o.textContent = m < 1440 ? `${Math.round(m / 6) / 10} h`.replace('.', ',') : `${Math.round(m / 144) / 10} g`.replace('.', ',');
+    sel.value = o.value;
+  }
   $('slider').min = String(-span); $('slider').max = String(span);
-  setCenter(state.live ? state.now : state.t);
+  setCenter(c);
   schedulePointFetch(); timelineLegend(); scheduleUpdate();
 }
+// Ora locale arrotondata per difetto al passo (così 1 g e 6 h cadono sulla mezzanotte locale).
+const localFloor = (t, st) => { const o = new Date(t).getTimezoneOffset() * MIN; return floorTo(t - o, st) + o; };
 
 function latestObservation() {
   if (prefs.layer !== 'precip') return Date.now();
@@ -1241,6 +1262,11 @@ function latestObservation() {
 const goLive = () => setTime(latestObservation(), { live: true });
 
 function step(dir) {
+  if (prefs.step) {
+    const t = localFloor(state.t, prefs.step);
+    stopLoop();
+    return setTime(dir > 0 ? t + prefs.step * MIN : t < state.t ? t : t - prefs.step * MIN);
+  }
   const st = state.pick ? state.pick.s.stepMin : SLIDER_STEP;
   const base = state.pick ? state.pick.f.time : state.t;
   stopLoop();
@@ -1256,8 +1282,8 @@ function play(on) {
   frames.setMax(on ? 8 : 3);
   if (!on) return;
   const tick = () => {
-    const st = state.pick ? state.pick.s.stepMin : 10;
-    let t = (state.pick ? state.pick.f.time : state.t) + st * MIN;
+    const st = prefs.step || (state.pick ? state.pick.s.stepMin : 10);
+    let t = (prefs.step ? localFloor(state.t, st) : state.pick ? state.pick.f.time : state.t) + st * MIN;
     if (state.loop && t > state.loop.end) t = state.loop.start;
     if (t > tLimits()[1]) return play(false);
     setTime(t);
@@ -1307,24 +1333,40 @@ function bindUI() {
   slider.step = String(SLIDER_STEP);
   setZoom(prefs.span);
   $('zoom').addEventListener('change', e => setZoom(Number(e.target.value)));
-  let wheelAt = 0;
   tlCanvas.addEventListener('wheel', e => {
     e.preventDefault();
-    if (e.timeStamp - wheelAt < 300) return; // i trackpad mandano raffiche di eventi: un livello per gesto
-    wheelAt = e.timeStamp;
-    const i = SPANS.indexOf(prefs.span) + Math.sign(e.deltaY);
-    if (SPANS[i]) setZoom(SPANS[i]);
+    const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1); // righe/pagine → px
+    setZoom(prefs.span * Math.exp(clamp(dy, -200, 200) * 0.003), e.clientX - tlCanvas.getBoundingClientRect().left);
   }, { passive: false });
+  const stepSel = $('step');
+  stepSel.value = String(prefs.step);
+  stepSel.addEventListener('change', () => { prefs.step = Number(stepSel.value); savePrefs(); });
   slider.addEventListener('input', () => { stopLoop(); setTime(state.center + Number(slider.value) * MIN); });
 
-  let dragging = false;
+  // Un dito/mouse sceglie l'istante; due dita fanno zoom (pinch).
+  const pts = new Map();
+  let pinch = null;
   const fromPointer = e => {
     const r = tlCanvas.getBoundingClientRect();
     stopLoop(); setTime(tOf(e.clientX - r.left, r.width));
   };
-  tlCanvas.addEventListener('pointerdown', e => { dragging = true; tlCanvas.setPointerCapture(e.pointerId); fromPointer(e); });
-  tlCanvas.addEventListener('pointermove', e => { if (dragging) fromPointer(e); });
-  tlCanvas.addEventListener('pointerup', () => { dragging = false; });
+  const spread = () => { const [a, b] = [...pts.values()]; return Math.abs(a - b); };
+  tlCanvas.addEventListener('pointerdown', e => {
+    tlCanvas.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, e.clientX);
+    if (pts.size === 2) pinch = { d: Math.max(20, spread()), span: prefs.span };
+    else if (pts.size === 1) fromPointer(e);
+  });
+  tlCanvas.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, e.clientX);
+    if (!pinch) return fromPointer(e);
+    const [a, b] = [...pts.values()];
+    setZoom(pinch.span * pinch.d / Math.max(20, spread()), (a + b) / 2 - tlCanvas.getBoundingClientRect().left);
+  });
+  const release = e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; };
+  tlCanvas.addEventListener('pointerup', release);
+  tlCanvas.addEventListener('pointercancel', release);
 
   $('btn-prev').addEventListener('click', () => step(-1));
   $('btn-next').addEventListener('click', () => step(1));
@@ -1418,6 +1460,8 @@ function bindUI() {
     if (e.key === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? setTime(state.t - HOUR) : step(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); e.shiftKey ? setTime(state.t + HOUR) : step(1); }
     else if (e.key === ' ' && !e.target.matches('button')) { e.preventDefault(); play(!state.playing); }
+    else if (e.key === '+' || e.key === '=') setZoom(prefs.span / 2);
+    else if (e.key === '-') setZoom(prefs.span * 2);
   });
 
   map.on('moveend', () => {
